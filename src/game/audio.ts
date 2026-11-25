@@ -1326,7 +1326,7 @@ export class HorrorAudioEngine {
     src.start(t, Math.random() * 0.6, 0.16);
   }
 
-  playFnafBlastDoor(closing: boolean): void {
+  playBunkerBlastDoor(closing: boolean): void {
     if (!this.ctx || !this.sfxGain || !this.pinkNoiseBuffer) return;
     const t = this.ctx.currentTime;
     const sub = this.ctx.createOscillator();
@@ -1438,7 +1438,7 @@ export class HorrorAudioEngine {
       rattle.start(t, 0.1, 0.26);
       this.playPlayerFootstep('stone', true, false);
     } else if (cue === 'gate_slam') {
-      this.playFnafBlastDoor(true);
+      this.playBunkerBlastDoor(true);
     } else if (cue === 'radio_static') {
       this.playCctvStatic();
       this.playCassettePlay();

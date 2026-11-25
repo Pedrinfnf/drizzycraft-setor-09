@@ -13,7 +13,7 @@ export type MaterialId =
   | 'ceiling_plaster'
   | 'rusted_metal'
   | 'vent_metal'
-  | 'fnaf_blast_door'
+  | 'bunker_blast_door'
   | 'door_wood'
   | 'door_red'
   | 'door_blue'
@@ -1404,8 +1404,8 @@ export function createProceduralMaterialPack(
     )
   );
 
-  // 13. FNAF Heavy Armored Security Blast Door (32x32 hazard stripes + steel plates + per-pixel LEDs!)
-  const fnaf_blast_door = register(
+  // 13. Cabine 09-A Heavy Armored Security Blast Door (32x32 hazard stripes + steel plates + per-pixel LEDs!)
+  const bunker_blast_door = register(
     buildPixelVoxelMaterial32(
       (x, y) => {
         const n = hashPx(x, y, 114);
@@ -1625,7 +1625,7 @@ export function createProceduralMaterialPack(
       ceiling_plaster,
       rusted_metal,
       vent_metal,
-      fnaf_blast_door,
+      bunker_blast_door,
       door_wood,
       door_red,
       door_blue,
@@ -1993,7 +1993,7 @@ export function createWallPosterTexture(variant: number): THREE.Texture {
     px(6, 48, 52, 2, '#60a5fa');
     px(6, 8, 2, 42, '#60a5fa');
     px(56, 8, 2, 42, '#60a5fa');
-    // West Wing (Refeitorio), East Wing (Oficina), Courtyard, Security FNAF, Archive, Infirmary
+    // West Wing (Refeitorio), East Wing (Oficina), Courtyard, Security Cabine 09-A, Archive, Infirmary
     px(16, 10, 2, 38, '#38bdf8');
     px(46, 10, 2, 38, '#38bdf8');
     px(18, 22, 28, 2, '#38bdf8');
@@ -2001,7 +2001,7 @@ export function createWallPosterTexture(variant: number): THREE.Texture {
     px(31, 10, 2, 12, '#38bdf8');
     // Room fills (subtle cyan/emerald highlights)
     px(20, 25, 24, 10, '#103c59'); // Courtyard
-    px(20, 39, 10, 8, '#1e3a5f');  // Security FNAF
+    px(20, 39, 10, 8, '#1e3a5f');  // Security Cabine 09-A
     px(34, 12, 11, 9, '#173854');  // Infirmary (blue)
     px(19, 12, 11, 9, '#3b1c2c');  // Archive (red)
     // Door markers & North Exit beacon
@@ -2215,9 +2215,9 @@ export function createFacilitySignTexture(
 }
 
 /**
- * Crisp pixel-art label for the FNAF Security Office physical wall door buttons.
+ * Crisp pixel-art label for the SecurityBunker (Cabine 09-A) physical wall door buttons.
  */
-export function createFnafButtonLabelTexture(side: 'left' | 'right'): THREE.Texture {
+export function createBunkerButtonLabelTexture(side: 'left' | 'right'): THREE.Texture {
   if (typeof document === 'undefined') return createHeadlessFallbackTexture(9, 14, 26);
   const canvas = document.createElement('canvas');
   canvas.width = 128;

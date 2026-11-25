@@ -14,7 +14,15 @@ import {
   INTERP_DELAY_MS,
   PeerInterpolationBuffer,
 } from '../network/MultiplayerClient';
-import { CELL_SIZE, generateMansionLayout, resolveWorldMovement } from './mansionMap';
+import {
+  CELL_SIZE,
+  CHAPTER1_DIARY_PAGES,
+  CHAPTER1_DUBBED_TAPES,
+  CREAKING_FLOORBOARDS,
+  ROOMS,
+  generateMansionLayout,
+  resolveWorldMovement,
+} from './mansionMap';
 import {
   DiddyAiController,
   compute3DProximityDistance,
@@ -595,4 +603,168 @@ test('Dedicated 3D Cutscene Sets & Anchors: all 4 endings + intro have valid bou
       checkInside(`camera[${i}].lookAt`, def.cameras[i].lookAt);
     }
   }
+});
+
+test('Multiplayer Match Lifecycle: DOWNED (35s) -> REVIVED (4s/2s Medkit) & DEAD_SPECTATING (no solo Game Over), ENDED_WIPEOUT only when ALL fall', async () => {
+  const srv = new GameServer(202655, 'hard');
+  const p1 = srv.addPlayer({ id: 'p1', nickname: 'Alice', platform: 'pc' });
+  const p2 = srv.addPlayer({ id: 'p2', nickname: 'Bob', platform: 'touch' });
+
+  // Open a door first so we verify revives NEVER reset world state
+  const redDoor = srv.layout.doors.find((d) => d.lockType === 'red_key')!;
+  p1.inventory.push('red_key');
+  p1.floor = redDoor.floor;
+  const u = srv.enqueueIntent('p1', { type: 'interact_door', doorId: redDoor.id });
+  srv.stepTick();
+  await u;
+  assert.equal(srv.state.doors[redDoor.id].isUnlocked, true);
+
+  // 1. P1 takes lethal damage (2 hits on Hard) -> enters DOWNED (35s bleedout), match MUST remain PLAYING!
+  srv.applyDamageToPlayer('p1');
+  srv.applyDamageToPlayer('p1');
+  assert.equal(p1.lifeState, 'DOWNED');
+  assert.equal(p1.bleedoutSec, 35.0);
+  assert.equal(srv.state.matchPhase, 'PLAYING', '1 downed player MUST NOT end Multiplayer match');
+
+  // 2. P2 revives P1 with Medkit in 2.0s -> restores ALIVE without resetting doors!
+  p2.x = p1.x + 1.0;
+  p2.z = p1.z;
+  p2.floor = p1.floor;
+  p2.inventory.push('medkit');
+  const rev1 = srv.enqueueIntent('p2', { type: 'revive_ally', targetPlayerId: 'p1', dtSec: 1.0 });
+  srv.stepTick();
+  assert.equal((await rev1).code, 'REVIVING');
+  const rev2 = srv.enqueueIntent('p2', { type: 'revive_ally', targetPlayerId: 'p1', dtSec: 1.1 });
+  srv.stepTick();
+  assert.equal((await rev2).code, 'REVIVED');
+  assert.equal(p1.lifeState, 'ALIVE');
+  assert.equal(p2.inventory.includes('medkit'), false, 'Medkit consumed on fast 2s revive');
+  assert.equal(srv.state.doors[redDoor.id].isUnlocked, true, 'Revive must NEVER reset unlocked doors');
+
+  // 3. P1 goes DOWNED again and bleeds out for 35s -> transitions to DEAD_SPECTATING (cannot interact, match stays PLAYING!)
+  p1.health = 1;
+  srv.applyDamageToPlayer('p1');
+  assert.equal(p1.lifeState, 'DOWNED');
+  for (let i = 0; i < 3550; i++) srv.stepTick();
+  assert.equal(p1.lifeState, 'DEAD_SPECTATING');
+  assert.equal(p1.spectating, true);
+  assert.equal(srv.state.matchPhase, 'PLAYING', '1 DEAD_SPECTATING player MUST NOT end MP match while P2 lives');
+
+  const blocked = srv.enqueueIntent('p1', { type: 'interact_door', doorId: redDoor.id });
+  srv.stepTick();
+  assert.equal((await blocked).ok, false, 'DEAD_SPECTATING player CANNOT interact with doors/items');
+
+  // 4. Now P2 also dies -> ALL players eliminated -> ENDED_WIPEOUT triggers!
+  p2.health = 1;
+  srv.applyDamageToPlayer('p2');
+  assert.equal(p2.lifeState, 'DOWNED');
+  for (let i = 0; i < 3550; i++) srv.stepTick();
+  assert.equal(p2.lifeState, 'DEAD_SPECTATING');
+  assert.equal(srv.state.matchPhase, 'ENDED_WIPEOUT');
+  assert.equal(srv.state.endingId, 'bad');
+});
+
+test('SecurityBunker (Cabine 09-A), 25-Room Mansion Expansion, New Puzzles, Tools & 4-Stage 15s Final Escape Protocol', async () => {
+  const srv = new GameServer(202677, 'hard');
+  const p1 = srv.addPlayer({ id: 'p1', nickname: 'Host', platform: 'pc' });
+  const p2 = srv.addPlayer({ id: 'p2', nickname: 'Ally', platform: 'touch' });
+
+  // 1. Mansion Expansion: 20+ rooms (25 rooms!), creaking floorboards, 4 diary pages, 2 dubbed tapes & 6s Intro
+  assert.ok(ROOMS.length >= 20, `Expected 20+ rooms in Chapter 1 overhaul, got ${ROOMS.length}`);
+  assert.ok(ROOMS.some((r) => r.id === 'outer_garden'));
+  assert.ok(ROOMS.some((r) => r.id === 'garage'));
+  assert.ok(ROOMS.some((r) => r.id === 'secret_attic'));
+  assert.ok(ROOMS.some((r) => r.id === 'owner_archives'));
+  assert.ok(CREAKING_FLOORBOARDS.length >= 4);
+  assert.equal(CHAPTER1_DIARY_PAGES.length, 4);
+  assert.equal(CHAPTER1_DUBBED_TAPES.length, 2);
+  const introTotalSec = INTRO_CUTSCENE.steps.reduce((s, st) => s + st.autoAdvanceSec, 0);
+  assert.equal(introTotalSec, 6.0, 'Intro cutscene must be crisp 6.0s');
+
+  // 2. SecurityBunker (Cabine 09-A): 4+ cameras, hydraulic door battery drain, Remote Acoustic Lure (25s cooldown)
+  assert.ok(srv.layout.bunkerCameras.length >= 4);
+  const lure1 = srv.enqueueIntent('p1', { type: 'trigger_bunker_lure' });
+  srv.stepTick();
+  assert.equal((await lure1).code, 'LURE_FIRED');
+  assert.ok(srv.state.bunkerLureCooldownSec >= 24.5);
+  const lureCooldown = srv.enqueueIntent('p1', { type: 'trigger_bunker_lure' });
+  srv.stepTick();
+  assert.equal((await lureCooldown).code, 'COOLDOWN');
+
+  // 3. New Puzzles & Tools: False Bookshelf (2 emblems), Piano 4-note sequence, 3 Steam Valves, Polaroid, Oil Can, Freq Pills, Co-op Give Item
+  p1.inventory.push('emblem_sun', 'emblem_moon', 'polaroid_camera', 'oil_can', 'freq_pills');
+  const b1 = srv.enqueueIntent('p1', { type: 'place_bookshelf_emblem', emblem: 'emblem_sun' });
+  const b2 = srv.enqueueIntent('p1', { type: 'place_bookshelf_emblem', emblem: 'emblem_moon' });
+  srv.stepTick();
+  await b1;
+  assert.equal((await b2).code, 'BOOKSHELF_OPENED');
+  assert.equal(srv.state.puzzles.bookshelfOpened, true);
+
+  for (const note of ['C', 'E', 'G', 'B']) {
+    const np = srv.enqueueIntent('p1', { type: 'input_piano_note', note });
+    srv.stepTick();
+    await np;
+  }
+  assert.equal(srv.state.puzzles.pianoSolved, true);
+
+  for (const v of [2, 1, 3] as const) {
+    const vp = srv.enqueueIntent('p1', { type: 'turn_steam_valve', valveIndex: v });
+    srv.stepTick();
+    await vp;
+  }
+  assert.equal(srv.state.puzzles.steamSolved, true);
+
+  const pol = srv.enqueueIntent('p1', { type: 'fire_polaroid', yaw: 0, pitch: 0 });
+  srv.stepTick();
+  assert.equal((await pol).ok, true);
+  assert.equal(srv.state.puzzles.polaroidClueRevealed, true);
+
+  p1.neuralInterference = 72;
+  const pills = srv.enqueueIntent('p1', { type: 'use_freq_pills' });
+  srv.stepTick();
+  assert.equal((await pills).code, 'INTERFERENCE_CLEARED');
+  assert.equal(p1.neuralInterference, 0);
+
+  // Co-op Give Item hand-off
+  p2.x = p1.x + 1.0;
+  p2.z = p1.z;
+  p2.floor = p1.floor;
+  const oilIdx = p1.inventory.indexOf('oil_can');
+  const giveP = srv.enqueueIntent('p1', { type: 'give_item', targetPlayerId: 'p2', slotIndex: oilIdx });
+  srv.stepTick();
+  assert.equal((await giveP).code, 'GIVEN');
+  assert.equal(p2.inventory.includes('oil_can'), true);
+
+  // 4. Hard 4-Stage Final Gate Protocol + 15s Siren Survival -> ENDED_VICTORY!
+  p1.inventory.push('fuse', 'fuse', 'wire_cutters', 'master_key');
+  const f1 = srv.enqueueIntent('p1', { type: 'final_gate_install_fuse' });
+  const f2 = srv.enqueueIntent('p1', { type: 'final_gate_install_fuse' });
+  srv.stepTick();
+  await f1;
+  assert.equal((await f2).code, 'STAGE_1_COMPLETE');
+
+  const c1 = srv.enqueueIntent('p1', { type: 'final_gate_cut_chain' });
+  const c2 = srv.enqueueIntent('p1', { type: 'final_gate_cut_chain' });
+  srv.stepTick();
+  await c1;
+  assert.equal((await c2).code, 'STAGE_2_COMPLETE');
+
+  const codeP = srv.enqueueIntent('p1', {
+    type: 'final_gate_submit_master_code',
+    code: srv.state.finalGate.sixDigitCode,
+  });
+  srv.stepTick();
+  assert.equal((await codeP).code, 'STAGE_3_COMPLETE');
+
+  // Pull hydraulic lever in co-op (2 players = 2x speed, 1.0s instead of 2.0s!) -> starts 15s siren!
+  const levP = srv.enqueueIntent('p1', { type: 'final_gate_pull_lever', dtSec: 1.0, helpersCount: 2 });
+  srv.stepTick();
+  assert.equal((await levP).code, 'SIREN_15S_STARTED');
+  assert.equal(srv.state.finalGate.sirenActive, true);
+  assert.equal(srv.state.matchPhase, 'PLAYING');
+
+  // Survive 15.0 seconds (1500 ticks @ 10ms) -> Gate opens & triggers ENDED_VICTORY!
+  for (let i = 0; i < 1510; i++) srv.stepTick();
+  assert.equal(srv.state.finalGate.gateFullyOpen, true);
+  assert.equal(srv.state.matchPhase, 'ENDED_VICTORY');
 });

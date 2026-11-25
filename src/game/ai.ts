@@ -511,7 +511,7 @@ export function hasLineOfSight(
     const grid = floor === 0 ? layout.floor0 : layout.floorMinus1;
     const cell = grid[cellIdx(gx, gz)];
     if (cell === CELL_WALL || cell === CELL_VOID) return false;
-    // Closed FNAF blast doors and closed locked doors block vision!
+    // Closed SecurityBunker hydraulic doors and closed locked doors block vision!
     const door = isDoorBlockingCell(layout.doors, gx, gz, floor, false);
     if (door && !door.isOpen) return false;
   }
@@ -555,7 +555,7 @@ export interface DiddyAiEvents {
  *  - ZERO path prediction & ZERO wallhack tracking: only pursues live LOS or heard noise.
  *  - Gives up after 4.0s without LOS and picks a DISTANT patrol waypoint (zero camping!).
  *  - 100% fair hiding spots: NEVER pulls player out unless he genuinely had direct LOS when entering.
- *  - Cannot enter Voxel Ventilation Ducts (CELL_VENT) and cannot breach powered FNAF Blast Doors!
+ *  - Cannot enter Voxel Ventilation Ducts (CELL_VENT) and cannot breach powered SecurityBunker Hydraulic Doors!
  */
 export class DiddyAiController {
   x = 0;
@@ -1080,11 +1080,11 @@ export class DiddyAiController {
         const mx = this.vx * dt;
         const mz = this.vz * dt;
 
-        // Open unlocked normal wooden doors only (NEVER breach locked doors or closed powered FNAF blast doors!)
+        // Open unlocked normal wooden doors only (NEVER breach locked doors or closed powered SecurityBunker hydraulic doors!)
         const aheadGx = worldToGrid(this.x + steered.dirX * 0.9);
         const aheadGz = worldToGrid(this.z + steered.dirZ * 0.9);
         const nearDoor = isDoorBlockingCell(layout.doors, aheadGx, aheadGz, this.floor, false);
-        if (nearDoor && nearDoor.isUnlocked && !nearDoor.isOpen && nearDoor.lockType !== 'fnaf_blast') {
+        if (nearDoor && nearDoor.isUnlocked && !nearDoor.isOpen && nearDoor.lockType !== 'bunker_blast') {
           nearDoor.isOpen = true;
           this.breachAnimTimer = 0.45;
           events.breachedDoor = nearDoor;

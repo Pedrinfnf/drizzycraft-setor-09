@@ -21,8 +21,13 @@ import type {
 } from '../types';
 import {
   BROADCAST_INTERVAL_TICKS,
+  BUNKER_LURE_COOLDOWN_SEC,
+  DOWNED_BLEEDOUT_SEC,
+  FINAL_GATE_SIREN_SEC,
   KEY_PROGRESSION_ITEMS,
   LAG_COMP_HISTORY_TICKS,
+  REVIVE_DURATION_MEDKIT_SEC,
+  REVIVE_DURATION_NORMAL_SEC,
   SELF_HEAL_SNAPSHOT_TICKS,
   SERVER_MAX_FRAME_DT,
   SERVER_TICK_SEC,
@@ -158,6 +163,11 @@ export class GameServer {
         lightSwitches[sw.id] = sw.isOn;
       }
 
+      // Deterministic 6-digit Final Gate code (3 digits on SecurityBunker CRT + 3 digits in Secret Attic)
+      const bunkerHalf = String(100 + (Math.abs(seed * 31 + 17) % 899));
+      const atticHalf = String(100 + (Math.abs(seed * 73 + 41) % 899));
+      const sixDigitCode = `${bunkerHalf}${atticHalf}`;
+
       this.state = {
         tick: 0,
         serverTimeMs: Date.now(),
@@ -165,6 +175,7 @@ export class GameServer {
         difficulty,
         elapsedSec: 0,
         phase: 'playing',
+        matchPhase: 'PLAYING',
         endingId: null,
         players: {},
         diddy: {
@@ -187,8 +198,37 @@ export class GameServer {
         terminalUnlocked: false,
         hatchOpened: false,
         securityPowerPct: 100,
-        fnafLeftClosed: false,
-        fnafRightClosed: false,
+        bunkerLeftClosed: false,
+        bunkerRightClosed: false,
+        bunkerLureCooldownSec: 0,
+        puzzles: {
+          bookshelfEmblemsPlaced: [],
+          bookshelfOpened: false,
+          pianoNotesEntered: [],
+          pianoSolved: false,
+          steamValvesTurned: [],
+          steamSolved: false,
+          polaroidClueRevealed: false,
+          garageCarParts: [],
+          garageCarReady: false,
+        },
+        finalGate: {
+          fusesRestored: 0,
+          chainsCut: 0,
+          masterKeyInserted: false,
+          sixDigitCodeVerified: false,
+          sixDigitCode,
+          hydraulicLeverProgress: 0,
+          hydraulicLeverPulled: false,
+          sirenActive: false,
+          sirenRemainingSec: FINAL_GATE_SIREN_SEC,
+          gateFullyOpen: false,
+        },
+        atmosphere: {
+          corridorPowerDipSec: 0,
+          thunderFlashIntensity: 0,
+          nextEventTimerSec: 28,
+        },
         discoveredClueIds: [],
         discoveredUvMarkIds: [],
         listenedCassetteIds: [],
@@ -262,8 +302,14 @@ export class GameServer {
       platform: params.platform ?? 'pc',
       connected: true,
       alive: true,
+      lifeState: 'ALIVE',
+      bleedoutSec: 0,
+      reviveProgressSec: 0,
+      captureCount: 0,
       capturedInCell: false,
       spectating: false,
+      polaroidCharges: 3,
+      neuralInterference: 0,
       x: this.layout.spawnPoint.x + offsetX,
       y: this.layout.spawnPoint.y,
       z: this.layout.spawnPoint.z + offsetZ,
@@ -398,15 +444,78 @@ export class GameServer {
 
     const diffCfg = getDifficultyConfig(this.state.difficulty);
 
-    // 2. Step FNAF Security Power
-    const closedCount = (this.state.fnafLeftClosed ? 1 : 0) + (this.state.fnafRightClosed ? 1 : 0);
+    // 2. Step SecurityBunker Power, Remote Lure Cooldown, Atmospheric Events & 15s Final Gate Siren
+    if (this.state.bunkerLureCooldownSec > 0) {
+      this.state.bunkerLureCooldownSec = Math.max(0, this.state.bunkerLureCooldownSec - SERVER_TICK_SEC);
+    }
+
+    // Synchronized atmospheric events (corridor power dip & thunder flash)
+    this.state.atmosphere.nextEventTimerSec -= SERVER_TICK_SEC;
+    if (this.state.atmosphere.corridorPowerDipSec > 0) {
+      this.state.atmosphere.corridorPowerDipSec = Math.max(0, this.state.atmosphere.corridorPowerDipSec - SERVER_TICK_SEC);
+    }
+    if (this.state.atmosphere.thunderFlashIntensity > 0) {
+      this.state.atmosphere.thunderFlashIntensity = Math.max(0, this.state.atmosphere.thunderFlashIntensity - SERVER_TICK_SEC * 2.2);
+    }
+    if (this.state.atmosphere.nextEventTimerSec <= 0) {
+      this.state.atmosphere.nextEventTimerSec = 32 + ((this.state.tick * 13) % 24);
+      if ((this.state.tick & 1) === 0) {
+        this.state.atmosphere.thunderFlashIntensity = 1.0;
+      } else {
+        this.state.atmosphere.corridorPowerDipSec = 4.5;
+      }
+    }
+
+    // 4-Stage Final Gate 15-second frenzy siren countdown
+    if (this.state.finalGate.sirenActive && !this.state.finalGate.gateFullyOpen) {
+      this.state.finalGate.sirenRemainingSec = Math.max(
+        0,
+        this.state.finalGate.sirenRemainingSec - SERVER_TICK_SEC
+      );
+      if (this.state.tick % 50 === 0) {
+        this.noiseScratch.push({
+          x: gridToWorld(17.5),
+          y: FLOOR_0_Y,
+          z: gridToWorld(2.5),
+          floor: 0,
+          radius: 60,
+          priority: 5,
+          source: 'door',
+          timestamp: this.state.elapsedSec,
+        });
+      }
+      if (this.state.finalGate.sirenRemainingSec <= 0) {
+        this.state.finalGate.gateFullyOpen = true;
+        this.state.finalGate.sirenActive = false;
+        const exitDoor = this.layout.doors.find((d) => d.isExit);
+        if (exitDoor) {
+          exitDoor.isUnlocked = true;
+          exitDoor.isOpen = true;
+          const ds = this.state.doors[exitDoor.id];
+          if (ds) {
+            ds.isUnlocked = true;
+            ds.locked = false;
+            ds.isOpen = true;
+            this.dirtyDoors.add(exitDoor.id);
+          }
+        }
+        const ending: EndingId =
+          this.state.terminalUnlocked && (this.state.translationBoardSeen || this.state.discoveredUvMarkIds.length > 0)
+            ? 'secret'
+            : 'good';
+        this.triggerEnding(ending);
+        return;
+      }
+    }
+
+    const closedCount = (this.state.bunkerLeftClosed ? 1 : 0) + (this.state.bunkerRightClosed ? 1 : 0);
     if (closedCount > 0) {
       this.state.securityPowerPct = Math.max(0, this.state.securityPowerPct - closedCount * 3.2 * SERVER_TICK_SEC);
       if (this.state.securityPowerPct <= 0) {
-        this.state.fnafLeftClosed = false;
-        this.state.fnafRightClosed = false;
-        this.setDoorOpen('door_fnaf_left', true);
-        this.setDoorOpen('door_fnaf_right', true);
+        this.state.bunkerLeftClosed = false;
+        this.state.bunkerRightClosed = false;
+        this.setDoorOpen('door_bunker_left', true);
+        this.setDoorOpen('door_bunker_right', true);
       }
     } else if (!this.state.blackoutActive && this.state.securityPowerPct < 100) {
       this.state.securityPowerPct = Math.min(100, this.state.securityPowerPct + 0.85 * SERVER_TICK_SEC);
@@ -418,7 +527,32 @@ export class GameServer {
 
     for (const pid of Object.keys(this.state.players)) {
       const p = this.state.players[pid];
-      if (!p.connected || !p.alive || p.capturedInCell) continue;
+      if (!p.connected || p.lifeState === 'DEAD_SPECTATING' || p.lifeState === 'CAPTURED' || !p.alive || p.capturedInCell) {
+        continue;
+      }
+
+      // Tick DOWNED 35s bleedout countdown (can still crawl slowly, transitions to DEAD_SPECTATING at 0)
+      if (p.lifeState === 'DOWNED') {
+        p.bleedoutSec = Math.max(0, p.bleedoutSec - SERVER_TICK_SEC);
+        if (p.bleedoutSec <= 0) {
+          this.eliminatePlayerToSpectator(p);
+          continue;
+        }
+      }
+
+      // Neural Interference buildup in complete darkness or close proximity to P. Drizzy, healed by light/allies
+      const distDiddy = Math.hypot(p.x - this.ai.x, p.z - this.ai.z);
+      const nearDiddy = p.floor === this.ai.floor && distDiddy < 9.5;
+      const inDark = !p.flashlightOn || this.state.blackoutActive || this.state.atmosphere.corridorPowerDipSec > 0;
+      const nearAlly = Object.values(this.state.players).some(
+        (other) => other.id !== p.id && other.connected && other.lifeState === 'ALIVE' && other.floor === p.floor && Math.hypot(other.x - p.x, other.z - p.z) < 5.0
+      );
+      if (nearDiddy || inDark) {
+        const rate = (nearDiddy ? 4.2 : 0) + (inDark ? 1.8 : 0) - (nearAlly ? 2.5 : 0);
+        p.neuralInterference = Math.max(0, Math.min(100, p.neuralInterference + rate * SERVER_TICK_SEC));
+      } else {
+        p.neuralInterference = Math.max(0, p.neuralInterference - (nearAlly ? 8.5 : 4.5) * SERVER_TICK_SEC);
+      }
 
       p.invulnerableTimer = Math.max(0, p.invulnerableTimer - SERVER_TICK_SEC);
       p.hitBoostTimer = Math.max(0, p.hitBoostTimer - SERVER_TICK_SEC);
@@ -470,13 +604,15 @@ export class GameServer {
         const adrBoost = p.adrenalineBurstTimer > 0 ? 1.12 : 1.0;
         const crouchBoost = p.crouching && p.activePerks.includes('steady_hands') ? 1.15 : 1.0;
         const maxSpeed =
-          (p.crouching
-            ? diffCfg.playerCrouchSpeed * crouchBoost
-            : p.sprinting
-            ? diffCfg.playerSprintSpeed
-            : diffCfg.playerWalkSpeed) *
-          hitBoost *
-          adrBoost;
+          p.lifeState === 'DOWNED'
+            ? 1.15
+            : (p.crouching
+                ? diffCfg.playerCrouchSpeed * crouchBoost
+                : p.sprinting
+                ? diffCfg.playerSprintSpeed
+                : diffCfg.playerWalkSpeed) *
+              hitBoost *
+              adrBoost;
 
         const sinY = Math.sin(p.yaw);
         const cosY = Math.cos(p.yaw);
@@ -627,6 +763,12 @@ export class GameServer {
   }
 
   private applyDiddyHitToPlayer(p: PlayerState): void {
+    if (p.lifeState === 'DOWNED') {
+      // P. Drizzy finishes carrying downed survivor to basement holding cell
+      this.capturePlayerToCell(p);
+      return;
+    }
+
     p.health -= 1;
     this.dirtyPlayers.add(p.id);
     if (p.health > 0) {
@@ -638,12 +780,64 @@ export class GameServer {
       return;
     }
 
-    // Player health reached 0 -> Capture into basement cell & drop key items (Anti-Softlock)
+    // Multiplayer (2+ players) OR Solo with Adrenaline Burst: enter DOWNED (35s bleedout, crawl + ally revive!)
+    const connectedCount = Object.values(this.state.players).filter((pl) => pl.connected).length;
+    if (connectedCount > 1 || p.activePerks.includes('adrenaline_burst')) {
+      p.health = 0;
+      p.lifeState = 'DOWNED';
+      p.bleedoutSec = DOWNED_BLEEDOUT_SEC;
+      p.reviveProgressSec = 0;
+      p.crouching = true;
+      p.sprinting = false;
+      p.hidingSpotId = null;
+      p.invulnerableTimer = 2.5;
+      this.dirtyPlayers.add(p.id);
+      this.emitEvent({ tick: this.state.tick, type: 'player_downed', playerId: p.id });
+      return;
+    }
+
+    // Solo without Adrenaline -> Capture into basement cell
     this.capturePlayerToCell(p);
   }
 
-  private capturePlayerToCell(p: PlayerState): void {
+  private eliminatePlayerToSpectator(p: PlayerState): void {
     p.health = 0;
+    p.alive = false;
+    p.lifeState = 'DEAD_SPECTATING';
+    p.bleedoutSec = 0;
+    p.reviveProgressSec = 0;
+    p.capturedInCell = false;
+    p.spectating = true;
+    p.hidingSpotId = null;
+    this.dropKeyItemsFromPlayer(p);
+    this.dirtyPlayers.add(p.id);
+    this.emitEvent({ tick: this.state.tick, type: 'player_spectating', playerId: p.id });
+    this.checkTeamWipeout();
+  }
+
+  private checkTeamWipeout(): void {
+    const connectedPlayers = Object.values(this.state.players).filter((pl) => pl.connected);
+    if (connectedPlayers.length === 0) return;
+    // Match ONLY wipes out when ZERO players remain ALIVE or DOWNED (revivable)
+    const anyActive = connectedPlayers.some(
+      (pl) => pl.lifeState === 'ALIVE' || pl.lifeState === 'DOWNED'
+    );
+    if (!anyActive) {
+      this.triggerEnding('bad');
+    }
+  }
+
+  private capturePlayerToCell(p: PlayerState): void {
+    p.captureCount += 1;
+    // Exceeding capture limit (3rd capture) eliminates permanently into DEAD_SPECTATING
+    if (p.captureCount >= 3) {
+      this.eliminatePlayerToSpectator(p);
+      return;
+    }
+    p.health = 0;
+    p.lifeState = 'CAPTURED';
+    p.bleedoutSec = 0;
+    p.reviveProgressSec = 0;
     p.capturedInCell = true;
     p.spectating = true;
     p.hidingSpotId = null;
@@ -656,18 +850,13 @@ export class GameServer {
     p.floor = BASEMENT_CELL_POS.floor;
     this.dirtyPlayers.add(p.id);
     this.emitEvent({ tick: this.state.tick, type: 'player_captured', playerId: p.id });
-
-    // Check if ALL connected players are now captured -> Bad Ending!
-    const connectedPlayers = Object.values(this.state.players).filter((pl) => pl.connected);
-    const anyFree = connectedPlayers.some((pl) => pl.alive && !pl.capturedInCell);
-    if (!anyFree) {
-      this.triggerEnding('bad');
-    }
+    this.checkTeamWipeout();
   }
 
   private triggerEnding(endingId: EndingId): void {
     if (this.state.phase === 'ended') return;
     this.state.phase = 'ended';
+    this.state.matchPhase = endingId === 'bad' ? 'ENDED_WIPEOUT' : 'ENDED_VICTORY';
     this.state.endingId = endingId;
     this.worldFlagsDirty = true;
     this.emitEvent({ tick: this.state.tick, type: 'ending_triggered', detail: endingId });
@@ -703,7 +892,7 @@ export class GameServer {
       return { ok: true, code: 'CAPTURED' };
     }
 
-    if (!p.alive || p.capturedInCell) {
+    if (!p.alive || p.capturedInCell || p.lifeState !== 'ALIVE') {
       return { ok: false, code: 'PLAYER_INCAPACITATED' };
     }
 
@@ -844,14 +1033,14 @@ export class GameServer {
         return { ok: true, code: ds.isOpen ? 'OPENED' : 'CLOSED' };
       }
 
-      case 'toggle_fnaf_door': {
+      case 'toggle_bunker_door': {
         if (this.state.securityPowerPct <= 1) return { ok: false, code: 'NO_POWER' };
         if (intent.side === 'left') {
-          this.state.fnafLeftClosed = !this.state.fnafLeftClosed;
-          this.setDoorOpen('door_fnaf_left', !this.state.fnafLeftClosed);
+          this.state.bunkerLeftClosed = !this.state.bunkerLeftClosed;
+          this.setDoorOpen('door_bunker_left', !this.state.bunkerLeftClosed);
         } else {
-          this.state.fnafRightClosed = !this.state.fnafRightClosed;
-          this.setDoorOpen('door_fnaf_right', !this.state.fnafRightClosed);
+          this.state.bunkerRightClosed = !this.state.bunkerRightClosed;
+          this.setDoorOpen('door_bunker_right', !this.state.bunkerRightClosed);
         }
         return { ok: true, code: 'TOGGLED' };
       }
@@ -1060,16 +1249,313 @@ export class GameServer {
         const dist = Math.hypot(ally.x - p.x, ally.z - p.z);
         if (dist > 3.2) return { ok: false, code: 'TOO_FAR' };
 
+        // Consume lockpick or cell_key if present (also allows cell release when unlocked)
+        if (p.inventory.includes('lockpick')) {
+          p.inventory = p.inventory.filter((it) => it !== 'lockpick');
+          this.dirtyPlayers.add(p.id);
+        } else if (p.inventory.includes('cell_key')) {
+          p.inventory = p.inventory.filter((it) => it !== 'cell_key');
+          this.dirtyPlayers.add(p.id);
+        }
+
         ally.capturedInCell = false;
         ally.spectating = false;
         ally.alive = true;
+        ally.lifeState = 'ALIVE';
+        ally.bleedoutSec = 0;
         ally.health = Math.max(1, Math.min(ally.maxHealth, 1));
         ally.invulnerableTimer = 3.0;
         this.dirtyPlayers.add(ally.id);
         this.emitEvent({ tick: this.state.tick, type: 'player_rescued', playerId: p.id, targetId: ally.id });
         return { ok: true, code: 'RESCUED' };
       }
+
+      case 'revive_ally': {
+        const ally = this.state.players[intent.targetPlayerId];
+        if (!ally || ally.lifeState !== 'DOWNED') return { ok: false, code: 'NOT_DOWNED' };
+        if (ally.floor !== p.floor) return { ok: false, code: 'WRONG_FLOOR' };
+        const dist = Math.hypot(ally.x - p.x, ally.z - p.z);
+        if (dist > 3.2) return { ok: false, code: 'TOO_FAR' };
+
+        const hasMedkit = p.inventory.includes('medkit');
+        const requiredSec = hasMedkit ? REVIVE_DURATION_MEDKIT_SEC : REVIVE_DURATION_NORMAL_SEC;
+        const stepSec = Math.max(0.05, Math.min(4.5, intent.dtSec ?? 0.25));
+        ally.reviveProgressSec += stepSec;
+        if (ally.reviveProgressSec < requiredSec) {
+          this.dirtyPlayers.add(ally.id);
+          return { ok: true, code: 'REVIVING' };
+        }
+
+        if (hasMedkit) {
+          p.inventory = p.inventory.filter((it) => it !== 'medkit');
+          this.dirtyPlayers.add(p.id);
+        }
+        ally.lifeState = 'ALIVE';
+        ally.alive = true;
+        ally.spectating = false;
+        ally.capturedInCell = false;
+        ally.bleedoutSec = 0;
+        ally.reviveProgressSec = 0;
+        ally.crouching = false;
+        ally.health = Math.max(1, Math.min(ally.maxHealth, hasMedkit ? ally.maxHealth : 1));
+        ally.invulnerableTimer = 3.0;
+        this.dirtyPlayers.add(ally.id);
+        this.emitEvent({ tick: this.state.tick, type: 'player_revived', playerId: p.id, targetId: ally.id });
+        return { ok: true, code: 'REVIVED' };
+      }
+
+      case 'trigger_bunker_lure': {
+        if (this.state.bunkerLureCooldownSec > 0) return { ok: false, code: 'COOLDOWN' };
+        if (this.state.securityPowerPct < 5) return { ok: false, code: 'NO_POWER' };
+        this.state.bunkerLureCooldownSec = BUNKER_LURE_COOLDOWN_SEC;
+        this.state.securityPowerPct = Math.max(0, this.state.securityPowerPct - 5);
+        const lx = intent.targetX ?? gridToWorld(17.5);
+        const lz = intent.targetZ ?? gridToWorld(11.0);
+        this.noiseScratch.push({
+          x: lx,
+          y: FLOOR_0_Y,
+          z: lz,
+          floor: 0,
+          radius: 36,
+          priority: 5,
+          source: 'door',
+          timestamp: this.state.elapsedSec,
+        });
+        this.worldFlagsDirty = true;
+        this.emitEvent({ tick: this.state.tick, type: 'bunker_lure_fired', playerId: p.id });
+        return { ok: true, code: 'LURE_FIRED' };
+      }
+
+      case 'give_item': {
+        const ally = this.state.players[intent.targetPlayerId];
+        if (!ally || ally.lifeState !== 'ALIVE') return { ok: false, code: 'INVALID_ALLY' };
+        if (ally.floor !== p.floor || Math.hypot(ally.x - p.x, ally.z - p.z) > 3.0) {
+          return { ok: false, code: 'TOO_FAR' };
+        }
+        const itemType = p.inventory[intent.slotIndex];
+        if (!itemType || itemType === 'flashlight') return { ok: false, code: 'CANNOT_GIVE' };
+        p.inventory.splice(intent.slotIndex, 1);
+        if (!ally.inventory.includes(itemType)) ally.inventory.push(itemType);
+        this.dirtyPlayers.add(p.id);
+        this.dirtyPlayers.add(ally.id);
+        return { ok: true, code: 'GIVEN' };
+      }
+
+      case 'oil_door': {
+        if (!p.inventory.includes('oil_can')) return { ok: false, code: 'NEEDS_OIL_CAN' };
+        const ds = this.state.doors[intent.doorId];
+        if (!ds) return { ok: false, code: 'UNKNOWN_DOOR' };
+        ds.oiled = true;
+        this.dirtyDoors.add(intent.doorId);
+        return { ok: true, code: 'DOOR_OILED' };
+      }
+
+      case 'throw_alarm_clock': {
+        if (!p.inventory.includes('alarm_clock') && p.throwables <= 0) {
+          return { ok: false, code: 'NO_DISTRACTION' };
+        }
+        p.inventory = p.inventory.filter((it) => it !== 'alarm_clock');
+        this.dirtyPlayers.add(p.id);
+        this.noiseScratch.push({
+          x: intent.x,
+          y: p.y,
+          z: intent.z,
+          floor: p.floor,
+          radius: 30,
+          priority: 5,
+          source: 'thrown_object',
+          timestamp: this.state.elapsedSec,
+        });
+        return { ok: true, code: 'ALARM_THROWN' };
+      }
+
+      case 'fire_polaroid': {
+        if (!p.inventory.includes('polaroid_camera') || p.polaroidCharges <= 0) {
+          return { ok: false, code: 'NO_POLAROID_CHARGES' };
+        }
+        p.polaroidCharges -= 1;
+        this.state.puzzles.polaroidClueRevealed = true;
+        this.dirtyPlayers.add(p.id);
+        this.worldFlagsDirty = true;
+
+        // 3.0s Flash Stun if P. Drizzy is within 11m in front on same floor with LOS
+        const dx = this.state.diddy.x - p.x;
+        const dz = this.state.diddy.z - p.z;
+        const dist = Math.hypot(dx, dz);
+        const hFwdX = -Math.sin(intent.yaw);
+        const hFwdZ = -Math.cos(intent.yaw);
+        const dot = dist > 0.01 ? (dx * hFwdX + dz * hFwdZ) / dist : 1;
+        if (
+          this.state.diddy.floor === p.floor &&
+          dist <= 11.5 &&
+          dot >= 0.65 &&
+          hasWallLineOfSight(this.layout, p.x, p.z, this.state.diddy.x, this.state.diddy.z, p.floor)
+        ) {
+          this.ai.stun(3.0);
+          this.state.diddy.state = 'stunned';
+          this.state.diddy.stunnedTimer = 3.0;
+          this.diddyDirty = true;
+          this.emitEvent({ tick: this.state.tick, type: 'diddy_stunned', playerId: p.id, detail: 'polaroid' });
+          return { ok: true, code: 'POLAROID_STUN_AND_REVEAL' };
+        }
+        return { ok: true, code: 'POLAROID_REVEALED' };
+      }
+
+      case 'use_freq_pills': {
+        if (!p.inventory.includes('freq_pills')) return { ok: false, code: 'NO_PILLS' };
+        p.inventory = p.inventory.filter((it) => it !== 'freq_pills');
+        p.neuralInterference = 0;
+        this.dirtyPlayers.add(p.id);
+        return { ok: true, code: 'INTERFERENCE_CLEARED' };
+      }
+
+      case 'place_bookshelf_emblem': {
+        if (!p.inventory.includes(intent.emblem)) return { ok: false, code: 'MISSING_EMBLEM' };
+        if (!this.state.puzzles.bookshelfEmblemsPlaced.includes(intent.emblem)) {
+          p.inventory = p.inventory.filter((it) => it !== intent.emblem);
+          this.state.puzzles.bookshelfEmblemsPlaced.push(intent.emblem);
+          this.dirtyPlayers.add(p.id);
+        }
+        if (this.state.puzzles.bookshelfEmblemsPlaced.length >= 2) {
+          this.state.puzzles.bookshelfOpened = true;
+          this.worldFlagsDirty = true;
+          this.emitEvent({ tick: this.state.tick, type: 'puzzle_solved', playerId: p.id, detail: 'false_bookshelf' });
+          return { ok: true, code: 'BOOKSHELF_OPENED' };
+        }
+        return { ok: true, code: 'EMBLEM_PLACED' };
+      }
+
+      case 'input_piano_note': {
+        const expected = ['C', 'E', 'G', 'B'];
+        const nextIdx = this.state.puzzles.pianoNotesEntered.length;
+        if (intent.note.toUpperCase() === expected[nextIdx]) {
+          this.state.puzzles.pianoNotesEntered.push(intent.note.toUpperCase());
+          if (this.state.puzzles.pianoNotesEntered.length >= expected.length) {
+            this.state.puzzles.pianoSolved = true;
+            this.worldFlagsDirty = true;
+            this.emitEvent({ tick: this.state.tick, type: 'puzzle_solved', playerId: p.id, detail: 'piano_clock' });
+            return { ok: true, code: 'PIANO_SOLVED' };
+          }
+          return { ok: true, code: 'NOTE_ACCEPTED' };
+        }
+        this.state.puzzles.pianoNotesEntered = [];
+        return { ok: false, code: 'WRONG_NOTE' };
+      }
+
+      case 'turn_steam_valve': {
+        const order = [2, 1, 3];
+        const nextIdx = this.state.puzzles.steamValvesTurned.length;
+        if (intent.valveIndex === order[nextIdx]) {
+          this.state.puzzles.steamValvesTurned.push(intent.valveIndex);
+          if (this.state.puzzles.steamValvesTurned.length >= order.length) {
+            this.state.puzzles.steamSolved = true;
+            this.worldFlagsDirty = true;
+            this.emitEvent({ tick: this.state.tick, type: 'puzzle_solved', playerId: p.id, detail: 'steam_valves' });
+            return { ok: true, code: 'STEAM_CLEARED' };
+          }
+          return { ok: true, code: 'VALVE_TURNED' };
+        }
+        this.state.puzzles.steamValvesTurned = [];
+        return { ok: false, code: 'WRONG_VALVE_ORDER' };
+      }
+
+      case 'install_garage_part': {
+        if (!p.inventory.includes(intent.part)) return { ok: false, code: 'MISSING_CAR_PART' };
+        if (!this.state.puzzles.garageCarParts.includes(intent.part)) {
+          p.inventory = p.inventory.filter((it) => it !== intent.part);
+          this.state.puzzles.garageCarParts.push(intent.part);
+          this.dirtyPlayers.add(p.id);
+        }
+        if (this.state.puzzles.garageCarParts.length >= 3) {
+          this.state.puzzles.garageCarReady = true;
+          this.worldFlagsDirty = true;
+          this.triggerEnding('good');
+          return { ok: true, code: 'GARAGE_CAR_ESCAPED' };
+        }
+        return { ok: true, code: 'CAR_PART_INSTALLED' };
+      }
+
+      case 'final_gate_install_fuse': {
+        if (this.state.finalGate.fusesRestored >= 2) return { ok: true, code: 'FUSES_COMPLETE' };
+        if (!p.inventory.includes('fuse')) return { ok: false, code: 'NEEDS_FUSE' };
+        const idx = p.inventory.indexOf('fuse');
+        if (idx >= 0) p.inventory.splice(idx, 1);
+        this.state.finalGate.fusesRestored += 1;
+        this.dirtyPlayers.add(p.id);
+        this.worldFlagsDirty = true;
+        return { ok: true, code: this.state.finalGate.fusesRestored >= 2 ? 'STAGE_1_COMPLETE' : 'FUSE_1_RESTORED' };
+      }
+
+      case 'final_gate_cut_chain': {
+        if (this.state.finalGate.fusesRestored < 2) return { ok: false, code: 'NEEDS_STAGE_1_FUSES' };
+        if (this.state.finalGate.chainsCut >= 2) return { ok: true, code: 'CHAINS_COMPLETE' };
+        if (!p.inventory.includes('wire_cutters')) return { ok: false, code: 'NEEDS_WIRE_CUTTERS' };
+        this.state.finalGate.chainsCut += 1;
+        this.worldFlagsDirty = true;
+        return { ok: true, code: this.state.finalGate.chainsCut >= 2 ? 'STAGE_2_COMPLETE' : 'CHAIN_1_CUT' };
+      }
+
+      case 'final_gate_submit_master_code': {
+        if (this.state.finalGate.chainsCut < 2) return { ok: false, code: 'NEEDS_STAGE_2_CHAINS' };
+        if (!this.state.finalGate.masterKeyInserted) {
+          if (!p.inventory.includes('master_key')) return { ok: false, code: 'NEEDS_MASTER_KEY' };
+          p.inventory = p.inventory.filter((it) => it !== 'master_key');
+          this.state.finalGate.masterKeyInserted = true;
+          this.dirtyPlayers.add(p.id);
+        }
+        if (intent.code !== this.state.finalGate.sixDigitCode) {
+          return { ok: false, code: 'WRONG_6_DIGIT_CODE' };
+        }
+        this.state.finalGate.sixDigitCodeVerified = true;
+        this.worldFlagsDirty = true;
+        return { ok: true, code: 'STAGE_3_COMPLETE' };
+      }
+
+      case 'final_gate_pull_lever': {
+        if (!this.state.finalGate.sixDigitCodeVerified) return { ok: false, code: 'NEEDS_STAGE_3_CODE' };
+        if (this.state.finalGate.sirenActive || this.state.finalGate.gateFullyOpen) {
+          return { ok: true, code: 'SIREN_ALREADY_ACTIVE' };
+        }
+        // Co-op lever pull is 2x faster when 2+ players pull together!
+        const helpers = Math.max(1, Math.min(2, intent.helpersCount ?? 1));
+        const pullRate = helpers >= 2 ? 1.0 : 0.5;
+        this.state.finalGate.hydraulicLeverProgress = Math.min(
+          1,
+          this.state.finalGate.hydraulicLeverProgress + (intent.dtSec ?? 2.0) * pullRate
+        );
+        if (this.state.finalGate.hydraulicLeverProgress < 1) {
+          return { ok: true, code: 'PULLING_LEVER' };
+        }
+        this.state.finalGate.hydraulicLeverPulled = true;
+        this.state.finalGate.sirenActive = true;
+        this.state.finalGate.sirenRemainingSec = FINAL_GATE_SIREN_SEC;
+        this.worldFlagsDirty = true;
+        this.emitEvent({ tick: this.state.tick, type: 'final_gate_siren', playerId: p.id });
+        return { ok: true, code: 'SIREN_15S_STARTED' };
+      }
+
+      case 'trigger_creak_board': {
+        if (p.crouching) return { ok: true, code: 'SILENT_CROUCH' };
+        this.noiseScratch.push({
+          x: intent.x,
+          y: p.y,
+          z: intent.z,
+          floor: p.floor,
+          radius: 17,
+          priority: 3,
+          source: 'sprint',
+          timestamp: this.state.elapsedSec,
+        });
+        return { ok: true, code: 'CREAK_ALERT' };
+      }
     }
+  }
+
+  /** Authoritative damage helper (triggers DOWNED in MP, CAPTURED in Solo without Adrenaline) */
+  public applyDamageToPlayer(playerId: string): void {
+    const p = this.state.players[playerId];
+    if (!p || !p.connected || p.lifeState === 'DEAD_SPECTATING' || p.lifeState === 'CAPTURED') return;
+    this.applyDiddyHitToPlayer(p);
   }
 
   private flushCompactDelta(): void {

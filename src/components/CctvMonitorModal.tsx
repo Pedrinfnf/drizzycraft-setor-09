@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { BatteryCharging, Camera, DoorClosed, DoorOpen, ShieldAlert, X } from 'lucide-react';
+import { BatteryCharging, BellRing, Camera, DoorClosed, DoorOpen, ShieldAlert, X } from 'lucide-react';
 import type { HudSnapshot } from '../game/types';
 import { ShieldDoorIcon } from './icons/GameIcons';
 
@@ -8,6 +8,7 @@ interface CctvMonitorModalProps {
   onBindCctvCanvas: (canvas: HTMLCanvasElement | null) => void;
   onSelectCamera: (index: number) => void;
   onToggleDoor: (side: 'left' | 'right') => void;
+  onTriggerRemoteLure?: () => void;
   onClose: () => void;
 }
 
@@ -16,6 +17,7 @@ export const CctvMonitorModal: React.FC<CctvMonitorModalProps> = ({
   onBindCctvCanvas,
   onSelectCamera,
   onToggleDoor,
+  onTriggerRemoteLure,
   onClose,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -54,7 +56,7 @@ export const CctvMonitorModal: React.FC<CctvMonitorModalProps> = ({
             </div>
             <div className="min-w-0">
               <div className="font-tech text-xs sm:text-sm font-black uppercase tracking-[0.16em] text-emerald-300 truncate">
-                CENTRAL CCTV // SETOR 09
+                GUARITA DE VIGILÂNCIA // CABINE 09-A
               </div>
               <div className="text-[10px] font-tech text-emerald-500 truncate">
                 FEED ATIVO: {activeCam.label} — {activeCam.roomName.toUpperCase()}
@@ -191,8 +193,28 @@ export const CctvMonitorModal: React.FC<CctvMonitorModalProps> = ({
                   </span>
                 </button>
               </div>
+              {onTriggerRemoteLure && (
+                <button
+                  type="button"
+                  data-testid="bunker-lure-btn"
+                  disabled={(hud.bunkerLureCooldownSec ?? 0) > 0 || hud.securityPowerPct < 5}
+                  onClick={onTriggerRemoteLure}
+                  className={`w-full px-2.5 py-2 border flex items-center justify-center gap-1.5 font-tech text-[10px] font-extrabold uppercase tracking-wider cursor-pointer transition-all ${
+                    (hud.bunkerLureCooldownSec ?? 0) > 0
+                      ? 'bg-slate-900 border-slate-700 text-slate-500 cursor-not-allowed'
+                      : 'bg-amber-950/85 border-amber-400/80 text-amber-200 hover:bg-amber-900/80'
+                  }`}
+                >
+                  <BellRing className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    {(hud.bunkerLureCooldownSec ?? 0) > 0
+                      ? `SINAL REMOTO (${Math.ceil(hud.bunkerLureCooldownSec ?? 0)}s)`
+                      : 'SINAL SONORO REMOTO'}
+                  </span>
+                </button>
+              )}
               <p className="text-[10px] font-tech text-slate-400 leading-snug">
-                Portas seladas bloqueiam P. Drizzy, mas drenam energia da sala. Em 0% abrem automaticamente.
+                Portas hidráulicas bloqueiam P. Drizzy drenando a bateria auxiliar. O Sinal Remoto (25s) atrai o predador para outro corredor.
               </p>
             </div>
           </div>

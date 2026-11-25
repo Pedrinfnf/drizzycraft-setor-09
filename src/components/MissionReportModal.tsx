@@ -23,6 +23,8 @@ export interface MissionReportModalProps {
   onReturnToTitle: () => void;
   onOpenStore?: () => void;
   onRankStampSound?: () => void;
+  onContinueChapter2?: () => void;
+  mpRoomCode?: string | null;
 }
 
 interface EndingTheme {
@@ -138,6 +140,8 @@ export const MissionReportModal: React.FC<MissionReportModalProps> = ({
   onReturnToTitle,
   onOpenStore,
   onRankStampSound,
+  onContinueChapter2,
+  mpRoomCode,
 }) => {
   const [stamped, setStamped] = useState(false);
   const [animatedCoins, setAnimatedCoins] = useState(0);
@@ -422,6 +426,30 @@ export const MissionReportModal: React.FC<MissionReportModalProps> = ({
         </div>
 
         {/* Footer Action Buttons */}
+        {/* Chapter Selector & Direct Bridge to Chapter 2 (keeps Multiplayer room connected!) */}
+        {onContinueChapter2 && report.endingId !== 'bad' && (
+          <div className="px-4 py-2.5 border-t border-cyan-500/40 bg-cyan-950/35 flex flex-col sm:flex-row items-center justify-between gap-2 shrink-0">
+            <div className="text-[11px] font-tech text-cyan-200">
+              <span className="font-extrabold uppercase tracking-wider text-cyan-300">
+                PONTE PARA O CAPÍTULO 2 · LABORATÓRIO ÔMEGA
+              </span>
+              {mpRoomCode && (
+                <span className="ml-2 px-1.5 py-0.5 bg-emerald-950 border border-emerald-500/60 text-emerald-300 text-[9px] font-bold">
+                  SALA {mpRoomCode} MANTIDA CONECTADA
+                </span>
+              )}
+            </div>
+            <button
+              type="button"
+              data-testid="continue-chapter2-btn"
+              onClick={onContinueChapter2}
+              className="horror-btn horror-btn-primary px-4 py-2 font-horror text-xs sm:text-sm font-extrabold tracking-widest uppercase cursor-pointer whitespace-nowrap"
+            >
+              CONTINUAR PARA O CAPÍTULO 2 ▶
+            </button>
+          </div>
+        )}
+
         <div className="px-4 py-3 border-t border-slate-800 bg-slate-950/95 grid grid-cols-1 sm:grid-cols-3 gap-2 shrink-0">
           <button
             type="button"

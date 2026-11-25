@@ -37,6 +37,8 @@ interface GameHudProps {
   voicePeers?: Array<{ id: string; nickname: string }>;
   mutedVoicePeers?: string[];
   onToggleMutePeer?: (peerId: string) => void;
+  onCycleSpectateTarget?: (dir: 1 | -1) => void;
+  onOpenBunkerCams?: () => void;
   onPause: () => void;
   onSelectSlot: (idx: number) => void;
   onDropActiveItem: () => void;
@@ -149,6 +151,8 @@ export const GameHud: React.FC<GameHudProps> = ({
   voicePeers = [],
   mutedVoicePeers = [],
   onToggleMutePeer,
+  onCycleSpectateTarget,
+  onOpenBunkerCams,
   onPause,
   onSelectSlot,
   onDropActiveItem,
@@ -234,6 +238,96 @@ export const GameHud: React.FC<GameHudProps> = ({
       }}
     >
       {/* Top Row: Tactical Left Telemetry Deck + Compact Right Utilities & Blueprint Minimap */}
+      {/* Subtle CRT Neural Interference Vignette */}
+      {(hud.neuralInterference ?? 0) > 18 && (
+        <div
+          aria-hidden="true"
+          data-testid="neural-interference-overlay"
+          className="pointer-events-none fixed inset-0 z-10 tactical-scanlines"
+          style={{
+            opacity: Math.min(0.55, ((hud.neuralInterference ?? 0) - 15) / 140),
+            boxShadow: 'inset 0 0 90px rgba(139, 92, 246, 0.45)',
+          }}
+        />
+      )}
+
+      {/* 15s Final Gate Siren Survival Alert */}
+      {(hud.finalGateSirenSec ?? 0) > 0 && (
+        <div
+          data-testid="final-gate-siren-banner"
+          className="fixed top-14 left-1/2 -translate-x-1/2 z-30 hud-tactical-panel px-4 py-2 border-2 border-red-500 bg-red-950/90 text-center animate-pulse"
+        >
+          <div className="text-[10px] font-tech font-extrabold uppercase tracking-[0.2em] text-red-300">
+            SIRENE DO PORTÃO FINAL · P. DRIZZY EM MODO FRENÉTICO
+          </div>
+          <div className="font-horror text-xl font-black text-white">
+            PORTÃO ABRINDO EM {Math.ceil(hud.finalGateSirenSec ?? 0)}s — SOBREVIVA!
+          </div>
+        </div>
+      )}
+
+      {/* DOWNED 35s Bleedout Bar */}
+      {hud.playerLifeState === 'DOWNED' && (
+        <div
+          data-testid="downed-bleedout-bar"
+          className="fixed bottom-28 left-1/2 -translate-x-1/2 z-30 w-72 hud-tactical-panel p-3 border-2 border-red-500 bg-red-950/90 text-center space-y-1.5"
+        >
+          <div className="text-[10px] font-tech font-extrabold uppercase tracking-[0.18em] text-red-200">
+            CAÍDO — ENGATINHE ATÉ UM ALIADO PARA REANIMAR
+          </div>
+          <div className="w-full h-2.5 bg-black/80 border border-red-400/70 overflow-hidden">
+            <div
+              className="h-full bg-red-500 transition-all duration-150"
+              style={{ width: `${Math.max(0, Math.min(100, ((hud.bleedoutSec ?? 35) / 35) * 100))}%` }}
+            />
+          </div>
+          <div className="text-xs font-tech font-black text-white">
+            SANGRAMENTO: {Math.ceil(hud.bleedoutSec ?? 0)}s
+          </div>
+        </div>
+      )}
+
+      {/* Multiplayer Spectator / Captured Camera Controls (ZERO solo Game Over!) */}
+      {(hud.playerLifeState === 'DEAD_SPECTATING' || hud.playerLifeState === 'CAPTURED') && (
+        <div
+          data-testid="mp-spectate-bar"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-auto hud-tactical-panel px-4 py-2.5 border border-cyan-400/75 bg-slate-950/92 flex flex-wrap items-center justify-center gap-2.5"
+        >
+          <div className="text-[10px] font-tech font-extrabold uppercase tracking-wider text-cyan-300">
+            {hud.playerLifeState === 'CAPTURED'
+              ? 'PRESO NA CELA · PEÇA RESGATE NO VOZ/CHAT'
+              : `MODO ESPECTADOR · ${hud.spectateTargetName || 'ACOMPANHANDO EQUIPE'}`}
+          </div>
+          {onCycleSpectateTarget && (
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => onCycleSpectateTarget(-1)}
+                className="horror-btn px-2.5 py-1 text-[10px] font-tech font-bold uppercase text-white cursor-pointer"
+              >
+                ◀ ALIADO
+              </button>
+              <button
+                type="button"
+                onClick={() => onCycleSpectateTarget(1)}
+                className="horror-btn px-2.5 py-1 text-[10px] font-tech font-bold uppercase text-white cursor-pointer"
+              >
+                ALIADO ▶
+              </button>
+            </div>
+          )}
+          {onOpenBunkerCams && (
+            <button
+              type="button"
+              onClick={onOpenBunkerCams}
+              className="horror-btn horror-btn-amber px-2.5 py-1 text-[10px] font-tech font-bold uppercase cursor-pointer"
+            >
+              CÂMERAS CABINE 09-A
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="flex items-start justify-between gap-2">
         {/* Top-Left: Location + Vitality + Integrated Battery/UV, Stamina & Noise Deck */}
         <div

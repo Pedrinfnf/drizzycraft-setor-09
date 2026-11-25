@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import {
   ArgCluePlacement,
   DoorDefinition,
-  FnafCameraDefinition,
+  BunkerCameraDefinition,
   HidingSpotDefinition,
   RechargeStationDefinition,
   SafeDefinition,
@@ -14,7 +14,7 @@ import {
   createArgClueTexture,
   createCctvSecretSignTexture,
   createFacilitySignTexture,
-  createFnafButtonLabelTexture,
+  createBunkerButtonLabelTexture,
   createTutorialBoardTexture,
 } from './textures';
 import {
@@ -48,7 +48,7 @@ function getDoorPalette(lockType: DoorDefinition['lockType']): {
       return { leaf: 0x334155, panel: 0x1e293b, trim: 0x475569, jamb: 0x1e293b, barred: true, accent: 0xa855f7 };
     case 'master_exit':
       return { leaf: 0x451a03, panel: 0x2c1002, trim: 0x78350f, jamb: 0x1c1917, barred: false, accent: 0xf59e0b };
-    case 'fnaf_blast':
+    case 'bunker_blast':
       return { leaf: 0x334155, panel: 0x1e293b, trim: 0x475569, jamb: 0x1e293b, barred: false, accent: 0x22c55e };
     default:
       return { leaf: 0x6b4b32, panel: 0x523723, trim: 0x3d2817, jamb: 0x2b1d12, barred: false, accent: 0x94a3b8 };
@@ -186,7 +186,7 @@ function buildDoorLeafGeo(
   return v.build({ anchor: [0, 0, sz * 0.5] }).geometry;
 }
 
-function buildFnafBlastPanelGeo(spanCells: number, cellSize: number, doorH: number): THREE.BufferGeometry {
+function buildBunkerBlastPanelGeo(spanCells: number, cellSize: number, doorH: number): THREE.BufferGeometry {
   const widthM = spanCells * cellSize - 0.1;
   const vs = 0.065;
   const sx = Math.max(20, Math.round(widthM / vs));
@@ -311,10 +311,10 @@ export function createSculptedDoorVisual(
   leafPivot.position.set(-(width - 0.14) / 2, 0, 0);
 
   let blastPanel: THREE.Group | null = null;
-  if (door.lockType === 'fnaf_blast') {
+  if (door.lockType === 'bunker_blast') {
     blastPanel = new THREE.Group();
     const blastMesh = createSculptedMesh(`door_blast_${door.spanCells}_${door.floor}`, () =>
-      buildFnafBlastPanelGeo(door.spanCells, cellSize, doorHeight)
+      buildBunkerBlastPanelGeo(door.spanCells, cellSize, doorHeight)
     );
     blastMesh.position.set(0, doorHeight / 2, 0);
     blastPanel.add(blastMesh);
@@ -351,7 +351,7 @@ export function createSculptedDoorVisual(
   let ledMesh: THREE.Mesh | null = null;
   if (
     door.lockType === 'master_exit' ||
-    door.lockType === 'fnaf_blast' ||
+    door.lockType === 'bunker_blast' ||
     door.lockType === 'red_key' ||
     door.lockType === 'blue_key' ||
     door.lockType === 'basement_key'
@@ -604,7 +604,7 @@ export function createSculptedHidingSpotVisual(
 }
 
 // ============================================================================
-// 3. SAFE, WORKBENCH, RECHARGE STATION, CCTV CAMERA, FNAF BUTTON, PILLAR, PLAQUES
+// 3. SAFE, WORKBENCH, RECHARGE STATION, CCTV CAMERA, Cabine 09-A BUTTON, PILLAR, PLAQUES
 // ============================================================================
 
 function buildSafeBodyGeo(): THREE.BufferGeometry {
@@ -864,7 +864,7 @@ function buildSecurityCameraHeadGeo(): THREE.BufferGeometry {
   return v.build({ anchor: [7.5, 6.5, 11] }).geometry;
 }
 
-export function createSculptedSecurityCameraVisual(cam: FnafCameraDefinition): THREE.Group {
+export function createSculptedSecurityCameraVisual(cam: BunkerCameraDefinition): THREE.Group {
   const group = new THREE.Group();
   group.position.set(cam.x, cam.y, cam.z);
 
@@ -878,7 +878,7 @@ export function createSculptedSecurityCameraVisual(cam: FnafCameraDefinition): T
   return group;
 }
 
-function buildFnafButtonBoxGeo(): THREE.BufferGeometry {
+function buildBunkerButtonBoxGeo(): THREE.BufferGeometry {
   // 18x26x8 armored steel door-control switchboard with hazard top/bottom bumpers,
   // protective button side shrouds, conduit stub & bolted bezel
   const v = new VoxelSculptor(18, 26, 8, 0.029);
@@ -902,7 +902,7 @@ function buildFnafButtonBoxGeo(): THREE.BufferGeometry {
   return v.build({ anchor: [9, 13, 2.5] }).geometry;
 }
 
-export function createSculptedFnafDoorButtonVisual(btn: {
+export function createSculptedBunkerDoorButtonVisual(btn: {
   x: number;
   y: number;
   z: number;
@@ -913,7 +913,7 @@ export function createSculptedFnafDoorButtonVisual(btn: {
   group.position.set(btn.x, btn.y, btn.z);
   group.rotation.y = btn.facingYaw;
 
-  group.add(createSculptedMesh('prop_fnaf_btn_box', buildFnafButtonBoxGeo));
+  group.add(createSculptedMesh('prop_bunker_btn_box', buildBunkerButtonBoxGeo));
 
   const buttonMat = new THREE.MeshStandardMaterial({
     color: 0x22c55e,
@@ -929,7 +929,7 @@ export function createSculptedFnafDoorButtonVisual(btn: {
   beacon.position.set(0, 0.27, 0.11);
   group.add(beacon);
 
-  const labelTex = createFnafButtonLabelTexture(btn.side);
+  const labelTex = createBunkerButtonLabelTexture(btn.side);
   const plaque = new THREE.Mesh(
     new THREE.BoxGeometry(0.42, 0.16, 0.025),
     new THREE.MeshStandardMaterial({
@@ -1462,7 +1462,7 @@ export function createSculptedAnimatedFanVisual(kind: 'ceiling' | 'desk'): {
     bladePivot.add(blades);
     group.add(bladePivot);
   } else {
-    // Vintage Guardhouse Desk Fan (FNAF homage!)
+    // Vintage Guardhouse Desk Fan (Cabine 09-A homage!)
     const body = createSculptedMesh('living_desk_fan_body_v1', () => {
       const v = new VoxelSculptor(16, 18, 14, 0.024);
       // Heavy cast-iron base + push buttons
@@ -1646,7 +1646,7 @@ export function createSculptedSwayingTarpVisual(): {
 }
 
 /**
- * Dirty, Cracked, Reflective Partition Window (Guardhouse FNAF observation glass, Infirmary, Display Cases).
+ * Dirty, Cracked, Reflective Partition Window (Guardhouse Cabine 09-A observation glass, Infirmary, Display Cases).
  * Uses optimized MeshStandardMaterial (transparent + PMREM envMapIntensity + 32x32 procedural grime/cracks,
  * ZERO heavy physical transmission!) so P. Drizzy's silhouette is visibly seen passing behind the glass!
  */

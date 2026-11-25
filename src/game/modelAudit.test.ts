@@ -16,7 +16,7 @@ import {
   createDiddyArticulatedRig,
   createDirtyGlassWindowVisual,
   createDoorVisual,
-  createFnafDoorButtonVisual,
+  createBunkerDoorButtonVisual,
   createFurnitureVisual,
   createHeldItemViewmodelRig,
   createHidingSpotVisual,
@@ -70,7 +70,7 @@ function createHeadlessMockPack(): MaterialPack {
     'door_blue',
     'door_iron',
     'door_exit',
-    'fnaf_blast_door',
+    'bunker_blast_door',
     'crate_wood',
     'rusted_metal',
     'vent_metal',
@@ -329,7 +329,7 @@ test('Anti-Simplification Audit: ALL Doors, Hiding Spots, Safe, Workbench, Elect
     'crowbar_planks',
     'wire_cutters',
     'master_exit',
-    'fnaf_blast',
+    'bunker_blast',
   ];
   for (const lockType of lockTypes) {
     const dv = createDoorVisual(
@@ -353,9 +353,9 @@ test('Anti-Simplification Audit: ALL Doors, Hiding Spots, Safe, Workbench, Elect
       1.6
     );
     check(`Door '${lockType}'`, dv.group);
-    if (lockType === 'fnaf_blast') {
-      assert.ok(dv.blastPanel, 'fnaf_blast door must have blastPanel');
-      assert.ok(dv.ledMesh, 'fnaf_blast door must have ledMesh');
+    if (lockType === 'bunker_blast') {
+      assert.ok(dv.blastPanel, 'bunker_blast door must have blastPanel');
+      assert.ok(dv.ledMesh, 'bunker_blast door must have ledMesh');
     }
   }
 
@@ -426,10 +426,10 @@ test('Anti-Simplification Audit: ALL Doors, Hiding Spots, Safe, Workbench, Elect
     })
   );
 
-  // FNAF Door Buttons
+  // Cabine 09-A Door Buttons
   for (const side of ['left', 'right'] as const) {
-    const btn = createFnafDoorButtonVisual({ x: 0, y: 1.4, z: 0, facingYaw: 0, side });
-    check(`FnafDoorButton '${side}'`, btn.group);
+    const btn = createBunkerDoorButtonVisual({ x: 0, y: 1.4, z: 0, facingYaw: 0, side });
+    check(`BunkerDoorButton '${side}'`, btn.group);
     assert.ok(btn.buttonMat);
   }
 

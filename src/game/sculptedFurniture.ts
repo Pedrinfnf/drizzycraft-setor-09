@@ -90,7 +90,7 @@ function buildBookshelfGeo(): THREE.BufferGeometry {
 }
 
 function buildSecurityDeskGeo(): THREE.BufferGeometry {
-  // 36x28x20 FNAF Security Console Desk:
+  // 36x28x20 Cabine 09-A Security Console Desk:
   // - Heavy beveled steel desk + left 3-drawer pedestal + rear cable tray
   // - Detailed PC tower on right floor/desk edge with perforated mesh grille, internal fan blades, glowing power LED & rear cables
   // - Dual deep sculpted CRT monitor shells with bezels, control buttons, rear vents & yellow post-it notes

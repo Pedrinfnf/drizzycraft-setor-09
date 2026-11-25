@@ -27,7 +27,7 @@ test('strict 3-layer RNG + BFS zero-softlock solver validates 220+ consecutive s
     assert.equal(layout.uvMarks.length, 5, `seed ${seed} must place 5 UV secret cipher marks`);
     assert.equal(layout.secretTerminalCode.length, 5, `seed ${seed} must generate 5-digit secret terminal code`);
     assert.equal(layout.cassettes.length, 4, `seed ${seed} must place 4 lore cassette decks`);
-    assert.equal(layout.fnafCameras.length, 6, `seed ${seed} must place 6 CCTV cameras`);
+    assert.equal(layout.bunkerCameras.length, 6, `seed ${seed} must place 6 CCTV cameras`);
     assert.equal(layout.vents.length, 3, `seed ${seed} must place 3 crouch-only ventilation ducts`);
     assert.ok(layout.workbenches.length >= 2, `seed ${seed} must place craft workbenches`);
     assert.ok(layout.rechargeStations.length >= 2, `seed ${seed} must place flashlight recharge stations`);
@@ -203,11 +203,11 @@ test('crouch-only CELL_VENT ducts block standing player & ALWAYS block P. Diddy,
   assert.equal(isPositionInVent(layout, cx, sz, 0), true, 'Crouching player must enter ventilation duct cleanly');
 });
 
-test('FNAF armored blast doors block BOTH player and P. Diddy when powered closed, and block Stun Gun LOS', () => {
+test('SecurityBunker hydraulic blast doors block BOTH player and P. Diddy when powered closed, and block Stun Gun LOS', () => {
   const layout = generateMansionLayout(42, 'hard');
-  const rightBlast = layout.doors.find((d) => d.id === 'door_fnaf_right')!;
-  const leftBlast = layout.doors.find((d) => d.id === 'door_fnaf_left')!;
-  assert.ok(rightBlast && leftBlast, 'Both FNAF lateral blast doors must exist');
+  const rightBlast = layout.doors.find((d) => d.id === 'door_bunker_right')!;
+  const leftBlast = layout.doors.find((d) => d.id === 'door_bunker_left')!;
+  assert.ok(rightBlast && leftBlast, 'Both Cabine 09-A lateral blast doors must exist');
 
   // Open by default -> passable & clear LOS
   assert.equal(rightBlast.isOpen, true);
@@ -375,10 +375,10 @@ test('walking underneath stairs on Underground floor NEVER teleports the player 
 test('ZERO floating items/cassettes: drawer contents anchored, non-drawer items resting on furniture, wall clues have facingYaw', () => {
   const layout = generateMansionLayout(42, 'hard');
 
-  // Verify FNAF tape_1 is inside furn_drawer_fnaf (never floating beside PC!)
+  // Verify Cabine 09-A tape_1 is inside furn_drawer_bunker (never floating beside PC!)
   const tape1 = layout.cassettes.find((c) => c.id === 'tape_1');
   assert.ok(tape1, 'tape_1 must exist');
-  assert.equal(tape1.drawerId, 'furn_drawer_fnaf', 'tape_1 must be stored inside furn_drawer_fnaf drawer');
+  assert.equal(tape1.drawerId, 'furn_drawer_bunker', 'tape_1 must be stored inside furn_drawer_bunker drawer');
 
   // Verify reception battery_0 is inside furn_drawer_reception
   const bat0 = layout.items.find((i) => i.id === 'battery_0');
@@ -428,17 +428,17 @@ test('ZERO floating items/cassettes: drawer contents anchored, non-drawer items 
   }
 });
 
-test('FNAF Security Office has prominent physical wall buttons beside BOTH lateral blast doors', () => {
+test('SecurityBunker (Cabine 09-A) has prominent physical wall buttons beside BOTH lateral blast doors', () => {
   const layout = generateMansionLayout(42, 'hard');
-  const leftBtn = layout.fnafButtons.find((b) => b.id === 'btn_fnaf_left');
-  const rightBtn = layout.fnafButtons.find((b) => b.id === 'btn_fnaf_right');
-  assert.ok(leftBtn, 'Left FNAF blast door wall button must exist');
-  assert.ok(rightBtn, 'Right FNAF blast door wall button must exist');
-  assert.equal(leftBtn.doorId, 'door_fnaf_left');
-  assert.equal(rightBtn.doorId, 'door_fnaf_right');
+  const leftBtn = layout.bunkerButtons.find((b) => b.id === 'btn_bunker_left');
+  const rightBtn = layout.bunkerButtons.find((b) => b.id === 'btn_bunker_right');
+  assert.ok(leftBtn, 'Left SecurityBunker hydraulic door wall button must exist');
+  assert.ok(rightBtn, 'Right SecurityBunker hydraulic door wall button must exist');
+  assert.equal(leftBtn.doorId, 'door_bunker_left');
+  assert.equal(rightBtn.doorId, 'door_bunker_right');
   // Both must sit inside Security Office corridor (x between 16 and 28 in world coords, z ~ 60)
   assert.ok(leftBtn.x < rightBtn.x, 'Left button must be west of right button');
-  assert.ok(Math.abs(leftBtn.z - rightBtn.z) < 0.6, 'Both buttons should align cleanly inside the FNAF office');
+  assert.ok(Math.abs(leftBtn.z - rightBtn.z) < 0.6, 'Both buttons should align cleanly inside the Cabine 09-A office');
 });
 
 test('RNG room dispersion spreads key items across multiple rooms without bunching across 35 seeds', () => {

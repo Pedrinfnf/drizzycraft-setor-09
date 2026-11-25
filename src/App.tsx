@@ -1103,6 +1103,8 @@ export default function App() {
                 nextMuted ? [...prev, peerId] : prev.filter((id) => id !== peerId)
               );
             }}
+            onCycleSpectateTarget={(dir) => engineRef.current?.cycleSpectateTarget(dir)}
+            onOpenBunkerCams={() => engineRef.current?.openBunkerMonitorFromSpectate()}
             onPause={() => engineRef.current?.pauseGame()}
             onSelectSlot={(idx) => engineRef.current?.selectHotbarSlot(idx)}
             onDropActiveItem={() => engineRef.current?.dropInventoryItem()}
@@ -1111,13 +1113,14 @@ export default function App() {
         </>
       )}
 
-      {/* FNAF Live 15 FPS 3D CCTV Security Monitor */}
+      {/* Guarita Cabine 09-A Live 15 FPS 3D CCTV Security Monitor */}
       {hud.cctvOpen && hud.mode === 'playing' && (
         <CctvMonitorModal
           hud={hud}
           onBindCctvCanvas={handleBindCctvCanvas}
           onSelectCamera={(idx) => engineRef.current?.selectCctvCamera(idx)}
-          onToggleDoor={(side) => engineRef.current?.toggleFnafDoor(side)}
+          onToggleDoor={(side) => engineRef.current?.toggleBunkerDoor(side)}
+          onTriggerRemoteLure={() => engineRef.current?.triggerBunkerRemoteLure()}
           onClose={() => engineRef.current?.closeCctvMonitor()}
         />
       )}
@@ -1209,6 +1212,15 @@ export default function App() {
             setStoreOpen(true);
           }}
           onRankStampSound={() => engineRef.current?.playRankStampSound()}
+          mpRoomCode={activeMpRoom}
+          onContinueChapter2={() => {
+            // Keeps activeMpRoom connected when transitioning to Chapter 2 lobby/match!
+            if (activeMpRoom) {
+              multiplayerClient.castVote({ chapter: 2 });
+              setMultiplayerOpen(true);
+            }
+            handleRestart();
+          }}
         />
       )}
 

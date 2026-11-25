@@ -49,7 +49,7 @@ function computeReachableCells(layout: MansionLayout, unlockedDoorIds: Set<strin
   // Build locked-door blocking cell lookup
   const blockedDoorCells = new Set<string>();
   for (const d of layout.doors) {
-    if (d.lockType === 'fnaf_blast') continue; // FNAF blast doors start open
+    if (d.lockType === 'bunker_blast') continue; // SecurityBunker hydraulic doors start open
     if (d.isUnlocked || unlockedDoorIds.has(d.id)) continue;
     const span = d.spanCells || 2;
     for (let i = 0; i < span; i++) {
@@ -472,14 +472,14 @@ test('All 4 Ending Routes: Bad, Good, Real & Secret Endings are 100% reachable, 
       `Seed ${seed}: North Exit door must be reachable`
     );
 
-    // 3. REAL ENDING (Resgate no Nível -2): wire_cutters + FNAF camera secret hint + radio/cassette + level2_hatch reachable
+    // 3. REAL ENDING (Resgate no Nível -2): wire_cutters + Cabine 09-A camera secret hint + radio/cassette + level2_hatch reachable
     assert.equal(solved.inv.has('wire_cutters'), true, `Seed ${seed}: Real Ending requires wire_cutters`);
-    const secretCam = layout.fnafCameras.find((cam) => Boolean(cam.secretCodeHint));
-    assert.ok(secretCam, `Seed ${seed}: Real Ending requires FNAF camera secret hint`);
+    const secretCam = layout.bunkerCameras.find((cam) => Boolean(cam.secretCodeHint));
+    assert.ok(secretCam, `Seed ${seed}: Real Ending requires Cabine 09-A camera secret hint`);
     assert.equal(
       secretCam.secretCodeHint,
       layout.cameraSecretCode,
-      `Seed ${seed}: FNAF camera secret hint must match layout.cameraSecretCode`
+      `Seed ${seed}: Cabine 09-A camera secret hint must match layout.cameraSecretCode`
     );
     assert.ok(layout.cassettes.length >= 1, `Seed ${seed}: Real Ending requires radio/cassette lore tapes`);
     const reachableCassettes = layout.cassettes.filter((t) =>
@@ -530,5 +530,18 @@ test('All 4 Ending Routes: Bad, Good, Real & Secret Endings are 100% reachable, 
       layout.secretTerminalCode,
       `Seed ${seed}: Translated UV marks must match layout.secretTerminalCode`
     );
+  }
+});
+
+test('Chapter 1 Overhaul Playthrough: SecurityBunker (Cabine 09-A) & 25-Room Mansion Zero-Softlock across seeds', () => {
+  for (let i = 0; i < 20; i++) {
+    const seed = 7700 + i * 19;
+    const layout = generateMansionLayout(seed, 'hard');
+    assert.ok(layout.bunkerCameras.length >= 4, 'Cabine 09-A must have 4+ live security cameras');
+    assert.ok(layout.doors.some((d) => d.id === 'door_bunker_left' && d.lockType === 'bunker_blast'));
+    assert.ok(layout.doors.some((d) => d.id === 'door_bunker_right' && d.lockType === 'bunker_blast'));
+    const solved = solveLayoutProgression(layout);
+    assert.equal(solved.safeUnlocked, true, `Seed ${seed}: Safe must be 100% solvable`);
+    assert.equal(solved.inv.has('master_key'), true, `Seed ${seed}: Master Key must be reachable`);
   }
 });

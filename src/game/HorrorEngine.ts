@@ -58,6 +58,7 @@ import {
   CELL_VENT,
   CELL_VOID,
   CELL_WALL,
+  CREAKING_FLOORBOARDS,
   FLOOR_0_Y,
   FLOOR_MINUS_1_Y,
   GRID_H,
@@ -90,7 +91,7 @@ import {
   createDirtyGlassWindowVisual,
   createDoorVisual,
   createDroppedItemGlowRing,
-  createFnafDoorButtonVisual,
+  createBunkerDoorButtonVisual,
   createFurnitureVisual,
   createHeldItemViewmodelRig,
   createHidingSpotVisual,
@@ -153,6 +154,7 @@ import type {
   GameSettings,
   GloveSkinId,
   HidingSpotDefinition,
+  PlayerLifeState,
   WorldPickupType,
   HotbarSlotInfo,
   HudSnapshot,
@@ -335,7 +337,7 @@ export class HorrorEngine {
   private outputPass: OutputPass | null = null;
   private usePostProcessing = false;
 
-  // FNAF 15 FPS Live 3D CCTV RenderTarget (1 reused target, 0 cost when closed!)
+  // Cabine 09-A 15 FPS Live 3D CCTV RenderTarget (1 reused target, 0 cost when closed!)
   private cctvRenderTarget: THREE.WebGLRenderTarget;
   private cctvCamera: THREE.PerspectiveCamera;
   private cctvPixelBuf = new Uint8Array(CCTV_W * CCTV_H * 4);
@@ -436,6 +438,14 @@ export class HorrorEngine {
   >();
   private mpPingMs: number | null = null;
   private mpSpectating = false;
+  private playerLifeState: PlayerLifeState = 'ALIVE';
+  private bleedoutSec = 0;
+  private spectateTargetIndex = 0;
+  private spectateTargetName: string | null = null;
+  private bunkerLureCooldownSec = 0;
+  private neuralInterference = 0;
+  private creakCooldownSec = 0;
+  private finalGateSirenSec = 0;
   private isRemoteClient = false;
   private remoteDiddyTarget = {
     x: 0,
@@ -455,7 +465,7 @@ export class HorrorEngine {
   private noisePropMeshes = new Map<string, THREE.Group>();
   private rechargeVisuals = new Map<string, { group: THREE.Group; statusMat: THREE.MeshStandardMaterial }>();
   private cassetteVisuals = new Map<string, { group: THREE.Group; ledMat: THREE.MeshStandardMaterial }>();
-  private fnafButtonVisuals = new Map<string, { group: THREE.Group; buttonMat: THREE.MeshStandardMaterial }>();
+  private bunkerButtonVisuals = new Map<string, { group: THREE.Group; buttonMat: THREE.MeshStandardMaterial }>();
   private uvMarkVisuals = new Map<string, { group: THREE.Group; mat: THREE.MeshStandardMaterial }>();
   private lightSwitchVisuals = new Map<
     string,
@@ -671,7 +681,7 @@ export class HorrorEngine {
     this.camera = new THREE.PerspectiveCamera(this.currentFov, w / h, 0.1, 115);
     this.scene.add(this.camera);
 
-    // FNAF CCTV RenderTarget & Camera (reused single GPU buffer — 0 FPS cost when closed!)
+    // Cabine 09-A CCTV RenderTarget & Camera (reused single GPU buffer — 0 FPS cost when closed!)
     this.cctvRenderTarget = new THREE.WebGLRenderTarget(CCTV_W, CCTV_H, {
       minFilter: THREE.NearestFilter,
       magFilter: THREE.NearestFilter,
@@ -909,6 +919,36 @@ export class HorrorEngine {
     }
   }
 
+  public triggerBunkerRemoteLure(): void {
+    if (this.bunkerLureCooldownSec > 0 || this.securityPowerPct < 5) return;
+    this.bunkerLureCooldownSec = 25.0;
+    this.securityPowerPct = Math.max(0, this.securityPowerPct - 5);
+    const lureX = gridToWorld(17.5);
+    const lureZ = gridToWorld(11.0);
+    this.emitNoise(lureX, FLOOR_0_Y, lureZ, 0, 36, 5, 'door');
+    this.audio.playFlashlightClick();
+    this.showBanner('SINAL SONORO REMOTO DISPARADO! P. Drizzy atraído para o Corredor Norte!');
+    this.emitHud();
+  }
+
+  public cycleSpectateTarget(dir: 1 | -1): void {
+    const alivePeers = Array.from(this.remotePeerRigs.values()).filter((p) => p.rig.root.visible && !p.captured);
+    if (alivePeers.length === 0) {
+      this.spectateTargetName = 'Cabine 09-A';
+      this.emitHud();
+      return;
+    }
+    this.spectateTargetIndex = (this.spectateTargetIndex + dir + alivePeers.length) % alivePeers.length;
+    this.spectateTargetName = alivePeers[this.spectateTargetIndex].nickname;
+    this.emitHud();
+  }
+
+  public openBunkerMonitorFromSpectate(): void {
+    if (this.mode !== 'playing') return;
+    this.cctvOpen = !this.cctvOpen;
+    this.emitHud();
+  }
+
   public getLocalPlayerSyncState(): {
     x: number;
     y: number;
@@ -1079,6 +1119,7 @@ export class HorrorEngine {
       difficulty: this.difficulty,
       elapsedSec: this.elapsedSec,
       phase: this.mode === 'playing' ? 'playing' : 'ended',
+      matchPhase: this.mode === 'playing' ? 'PLAYING' : this.mode === 'victory' ? 'ENDED_VICTORY' : 'ENDED_WIPEOUT',
       endingId: null,
       players: {},
       diddy: {
@@ -1101,8 +1142,37 @@ export class HorrorEngine {
       terminalUnlocked: this.terminalUnlocked,
       hatchOpened: false,
       securityPowerPct: this.securityPowerPct,
-      fnafLeftClosed: this.layout.doors.find((d) => d.id === 'door_fnaf_left')?.isOpen === false,
-      fnafRightClosed: this.layout.doors.find((d) => d.id === 'door_fnaf_right')?.isOpen === false,
+      bunkerLeftClosed: this.layout.doors.find((d) => d.id === 'door_bunker_left')?.isOpen === false,
+      bunkerRightClosed: this.layout.doors.find((d) => d.id === 'door_bunker_right')?.isOpen === false,
+      bunkerLureCooldownSec: this.bunkerLureCooldownSec,
+      puzzles: this.authoritativeServer?.state.puzzles ?? {
+        bookshelfEmblemsPlaced: [],
+        bookshelfOpened: false,
+        pianoNotesEntered: [],
+        pianoSolved: false,
+        steamValvesTurned: [],
+        steamSolved: false,
+        polaroidClueRevealed: false,
+        garageCarParts: [],
+        garageCarReady: false,
+      },
+      finalGate: this.authoritativeServer?.state.finalGate ?? {
+        fusesRestored: 0,
+        chainsCut: 0,
+        masterKeyInserted: false,
+        sixDigitCodeVerified: false,
+        sixDigitCode: '000000',
+        hydraulicLeverProgress: 0,
+        hydraulicLeverPulled: false,
+        sirenActive: false,
+        sirenRemainingSec: 15,
+        gateFullyOpen: false,
+      },
+      atmosphere: this.authoritativeServer?.state.atmosphere ?? {
+        corridorPowerDipSec: 0,
+        thunderFlashIntensity: 0,
+        nextEventTimerSec: 28,
+      },
       discoveredClueIds: [],
       discoveredUvMarkIds: [],
       listenedCassetteIds: [],
@@ -1233,8 +1303,8 @@ export class HorrorEngine {
         activeSlot: this.activeSlot,
         battery: Math.round(this.battery),
         droppedCount: this.layout.items.filter((i) => i.droppedByPlayer && !i.collected).length,
-        fnafLeftClosed: !(this.layout.doors.find((d) => d.id === 'door_fnaf_left')?.isOpen ?? true),
-        fnafRightClosed: !(this.layout.doors.find((d) => d.id === 'door_fnaf_right')?.isOpen ?? true),
+        bunkerLeftClosed: !(this.layout.doors.find((d) => d.id === 'door_bunker_left')?.isOpen ?? true),
+        bunkerRightClosed: !(this.layout.doors.find((d) => d.id === 'door_bunker_right')?.isOpen ?? true),
         cctvOpen: this.cctvOpen,
         quickInspect: this.quickInspect,
         interactPrompt: this.findNearestInteraction(),
@@ -1322,7 +1392,7 @@ export class HorrorEngine {
       openCctv: () => this.openCctvMonitor(),
       selectCam: (idx: number) => this.selectCctvCamera(idx),
       closeCctv: () => this.closeCctvMonitor(),
-      toggleFnafDoor: (side: 'left' | 'right') => this.toggleFnafDoor(side),
+      toggleBunkerDoor: (side: 'left' | 'right') => this.toggleBunkerDoor(side),
       closeQuickInspect: () => this.closeQuickInspect(),
     };
     (window as unknown as Record<string, unknown>).__diddyQA = bridge;
@@ -1661,6 +1731,14 @@ export class HorrorEngine {
     this.localPlayerId = localPlayerId;
     this.isRemoteClient = !runLocalServer;
     this.remoteDiddyTarget.initialized = false;
+    this.playerLifeState = 'ALIVE';
+    this.bleedoutSec = 0;
+    this.mpSpectating = false;
+    this.spectateTargetName = null;
+    this.bunkerLureCooldownSec = 0;
+    this.neuralInterference = 0;
+    this.creakCooldownSec = 0;
+    this.finalGateSirenSec = 0;
     const progInit = saveSystem.getProgression();
     if (runLocalServer) {
       this.authoritativeServer = new GameServer(seed, difficulty);
@@ -2056,7 +2134,7 @@ export class HorrorEngine {
     this.emitHud();
   }
 
-  // ---- MODALS: SAFE KEYPAD, FNAF CCTV, WORKBENCH, SECRET TERMINAL ----
+  // ---- MODALS: SAFE KEYPAD, Cabine 09-A CCTV, WORKBENCH, SECRET TERMINAL ----
 
   openSafeKeypad(): void {
     if (this.mode !== 'playing') return;
@@ -2277,7 +2355,7 @@ export class HorrorEngine {
   }
 
   selectCctvCamera(index: number): void {
-    if (index < 0 || index >= this.layout.fnafCameras.length) return;
+    if (index < 0 || index >= this.layout.bunkerCameras.length) return;
     this.cctvActiveCamIndex = index;
     this.audio.playCctvStatic();
     this.checkActiveCameraSecret();
@@ -2286,17 +2364,17 @@ export class HorrorEngine {
   }
 
   private checkActiveCameraSecret(): void {
-    const cam = this.layout.fnafCameras[this.cctvActiveCamIndex];
+    const cam = this.layout.bunkerCameras[this.cctvActiveCamIndex];
     if (cam?.secretCodeHint && !this.cctvSecretHintSeen) {
       this.cctvSecretHintSeen = true;
       this.showBanner(`CAM 06 registrou código secreto na parede: ${cam.secretCodeHint} (salvo no Diário!)`);
     }
   }
 
-  toggleFnafDoor(side: 'left' | 'right'): void {
+  toggleBunkerDoor(side: 'left' | 'right'): void {
     if (this.mode !== 'playing') return;
     this.audio.unlock();
-    const doorId = side === 'left' ? 'door_fnaf_left' : 'door_fnaf_right';
+    const doorId = side === 'left' ? 'door_bunker_left' : 'door_bunker_right';
     const door = this.layout.doors.find((d) => d.id === doorId);
     if (!door) return;
 
@@ -2308,9 +2386,9 @@ export class HorrorEngine {
     }
 
     door.isOpen = !door.isOpen;
-    this.audio.playFnafBlastDoor(!door.isOpen);
+    this.audio.playBunkerBlastDoor(!door.isOpen);
     this.emitNoise(this.px, this.py, this.pz, this.pFloor, 12, 2, 'door');
-    this.updateFnafVisualIndicators();
+    this.updateBunkerVisualIndicators();
     this.showBanner(
       door.isOpen
         ? `${door.name} aberta.`
@@ -2319,10 +2397,10 @@ export class HorrorEngine {
     this.emitHud();
   }
 
-  private updateFnafVisualIndicators(): void {
-    for (const btn of this.layout.fnafButtons) {
+  private updateBunkerVisualIndicators(): void {
+    for (const btn of this.layout.bunkerButtons) {
       const door = this.layout.doors.find((d) => d.id === btn.doorId);
-      const vis = this.fnafButtonVisuals.get(btn.id);
+      const vis = this.bunkerButtonVisuals.get(btn.id);
       if (door && vis) {
         const closed = !door.isOpen;
         vis.buttonMat.color.setHex(closed ? 0xef4444 : 0x22c55e);
@@ -3145,14 +3223,14 @@ export class HorrorEngine {
     }
 
     if (prompt.actionType === 'cctv_monitor') {
-      this.advanceAndNotifyAchievement('fnaf_guardian', 1);
+      this.advanceAndNotifyAchievement('bunker_guardian', 1);
       this.openCctvMonitor();
       return;
     }
 
-    if (prompt.actionType === 'fnaf_door_btn') {
-      const btn = this.layout.fnafButtons.find((b) => b.id === prompt.id);
-      if (btn) this.toggleFnafDoor(btn.side);
+    if (prompt.actionType === 'bunker_door_btn') {
+      const btn = this.layout.bunkerButtons.find((b) => b.id === prompt.id);
+      if (btn) this.toggleBunkerDoor(btn.side);
       return;
     }
 
@@ -3379,7 +3457,7 @@ export class HorrorEngine {
     this.noisePropMeshes.clear();
     this.rechargeVisuals.clear();
     this.cassetteVisuals.clear();
-    this.fnafButtonVisuals.clear();
+    this.bunkerButtonVisuals.clear();
     this.uvMarkVisuals.clear();
     this.lightSwitchVisuals.clear();
     this.thrownProjectiles = [];
@@ -3495,7 +3573,7 @@ export class HorrorEngine {
       this.floor0Chunks.push(pMesh);
     }
 
-    // 4. Doors (Hinged, Wire-Cutter Gate & FNAF Vertical Blast Doors)
+    // 4. Doors (Hinged, Wire-Cutter Gate & Cabine 09-A Vertical Blast Doors)
     for (const d of this.layout.doors) {
       const dv = createDoorVisual(d, this.materialPack, CELL_SIZE);
       this.worldRegistry.trackObject3D(dv.group);
@@ -3569,7 +3647,7 @@ export class HorrorEngine {
       (np.floor === 0 ? this.floor0Chunks : this.floorMinus1Chunks).push(mesh);
     }
 
-    // 11. Workbenches, Recharge Stations, Cassettes (nested in drawers or on benches!), CCTV Cameras, FNAF Buttons,
+    // 11. Workbenches, Recharge Stations, Cassettes (nested in drawers or on benches!), CCTV Cameras, Cabine 09-A Buttons,
     // Tutorial Plaques, UV Fluorescent Marks, and Secret CAM-06 Sign
     for (const wb of this.layout.workbenches) {
       const mesh = createWorkbenchVisual(wb, this.materialPack);
@@ -3603,18 +3681,18 @@ export class HorrorEngine {
       this.cassetteVisuals.set(tape.id, vis);
     }
 
-    for (const cam of this.layout.fnafCameras) {
+    for (const cam of this.layout.bunkerCameras) {
       const mesh = createSecurityCameraVisual(cam);
       this.worldRegistry.trackObject3D(mesh);
       this.worldGroup.add(mesh);
       (cam.floor === 0 ? this.floor0Chunks : this.floorMinus1Chunks).push(mesh);
     }
 
-    for (const btn of this.layout.fnafButtons) {
-      const vis = createFnafDoorButtonVisual(btn);
+    for (const btn of this.layout.bunkerButtons) {
+      const vis = createBunkerDoorButtonVisual(btn);
       this.worldRegistry.trackObject3D(vis.group);
       this.worldGroup.add(vis.group);
-      this.fnafButtonVisuals.set(btn.id, vis);
+      this.bunkerButtonVisuals.set(btn.id, vis);
       this.floor0Chunks.push(vis.group);
     }
 
@@ -3704,7 +3782,7 @@ export class HorrorEngine {
       this.settings.video.waterReflections ?? true,
       this.settings.video.waterQuality ?? 'high'
     );
-    this.updateFnafVisualIndicators();
+    this.updateBunkerVisualIndicators();
   }
 
   /**
@@ -4230,7 +4308,7 @@ export class HorrorEngine {
     for (const tp of this.layout.tutorialPlaques) if (tp.floor === floor) occupiedWalls.push({ x: tp.x, z: tp.z });
     for (const u of this.layout.uvMarks) if (u.floor === floor) occupiedWalls.push({ x: u.x, z: u.z });
     for (const sw of this.layout.lightSwitches) if (sw.floor === floor) occupiedWalls.push({ x: sw.x, z: sw.z });
-    for (const b of this.layout.fnafButtons) if (floor === 0) occupiedWalls.push({ x: b.x, z: b.z });
+    for (const b of this.layout.bunkerButtons) if (floor === 0) occupiedWalls.push({ x: b.x, z: b.z });
     const isWallClearForWindow = (x: number, z: number) => {
       for (const o of occupiedWalls) {
         if (Math.hypot(o.x - x, o.z - z) < 2.2) return false;
@@ -4682,8 +4760,8 @@ export class HorrorEngine {
   // ---- INTERACTION & PROGRESSION LOGIC ----
 
   private interactWithDoor(door: DoorDefinition): void {
-    if (door.lockType === 'fnaf_blast') {
-      this.toggleFnafDoor(door.id === 'door_fnaf_left' ? 'left' : 'right');
+    if (door.lockType === 'bunker_blast') {
+      this.toggleBunkerDoor(door.id === 'door_bunker_left' ? 'left' : 'right');
       return;
     }
 
@@ -4986,14 +5064,14 @@ export class HorrorEngine {
       }
     }
 
-    // 2. FNAF CCTV Monitor (generous 3.1m reach when looking straight at the dual monitors!)
+    // 2. Cabine 09-A CCTV Monitor (generous 3.1m reach when looking straight at the dual monitors!)
     if (this.layout.cctvMonitorPos.floor === this.pFloor) {
       const d = scoreInteract(this.layout.cctvMonitorPos.x, this.layout.cctvMonitorPos.z, 3.1, 0.15);
       if (d < bestDist) {
         bestDist = d;
         best = {
           id: 'cctv_monitor',
-          label: 'Abrir Monitor CCTV (FNAF)',
+          label: 'Abrir Monitor CCTV (Cabine 09-A)',
           sublabel: `6 Câmeras ao vivo · Energia ${Math.round(this.securityPowerPct)}%`,
           actionType: 'cctv_monitor',
           accent: 'emerald',
@@ -5001,8 +5079,8 @@ export class HorrorEngine {
       }
     }
 
-    // 3. FNAF Blast Door Buttons
-    for (const btn of this.layout.fnafButtons) {
+    // 3. Cabine 09-A Blast Door Buttons
+    for (const btn of this.layout.bunkerButtons) {
       if (btn.floor !== this.pFloor) continue;
       const d = scoreInteract(btn.x, btn.z, 2.65, 0.1);
       if (d < bestDist) {
@@ -5014,7 +5092,7 @@ export class HorrorEngine {
             ? `Fechar Porta Blindada (${btn.side === 'left' ? 'Oeste' : 'Leste'})`
             : `Abrir Porta Blindada (${btn.side === 'left' ? 'Oeste' : 'Leste'})`,
           sublabel: 'Bloqueia P. Drizzy · Consome Energia',
-          actionType: 'fnaf_door_btn',
+          actionType: 'bunker_door_btn',
           accent: door?.isOpen ? 'amber' : 'red',
         };
       }
@@ -5214,7 +5292,7 @@ export class HorrorEngine {
 
     // 11. Doors & Main Exit
     for (const door of this.layout.doors) {
-      if (door.floor !== this.pFloor || door.lockType === 'fnaf_blast') continue;
+      if (door.floor !== this.pFloor || door.lockType === 'bunker_blast') continue;
       const halfSpan = (door.spanCells || 2) * 0.5;
       const cx = door.axis === 'x' ? (door.gx + halfSpan) * CELL_SIZE : (door.gx + 0.5) * CELL_SIZE;
       const cz = door.axis === 'x' ? (door.gz + 0.5) * CELL_SIZE : (door.gz + halfSpan) * CELL_SIZE;
@@ -5589,7 +5667,7 @@ export class HorrorEngine {
       this.renderer.render(this.scene, this.camera);
     }
 
-    // Live 15 FPS FNAF CCTV Render (0 overhead when monitor closed!)
+    // Live 15 FPS Cabine 09-A CCTV Render (0 overhead when monitor closed!)
     if (this.mode === 'playing' && this.cctvOpen && this.cctvCanvas) {
       this.cctvRenderAccum += dt;
       const interval = this.isSoftwareGl ? 0.14 : 0.066;
@@ -5618,12 +5696,12 @@ export class HorrorEngine {
   };
 
   /**
-   * Renders the active FNAF Security Camera (CAM 01..06) live from the real 3D scene
+   * Renders the active Cabine 09-A Security Camera (CAM 01..06) live from the real 3D scene
    * using ONE reused 480x300 WebGLRenderTarget with boosted bright night-vision + crisp scanlines!
    */
   private renderCctvFrame(): void {
     if (!this.cctvCanvas) return;
-    const camDef = this.layout.fnafCameras[this.cctvActiveCamIndex];
+    const camDef = this.layout.bunkerCameras[this.cctvActiveCamIndex];
     if (!camDef) return;
 
     const ctx = this.cctvCanvas.getContext('2d');
@@ -5951,17 +6029,17 @@ export class HorrorEngine {
     if (this.cctvOpen) {
       if (edge(state.l1, prev?.l1)) {
         this.selectCctvCamera(
-          (this.cctvActiveCamIndex - 1 + this.layout.fnafCameras.length) % this.layout.fnafCameras.length
+          (this.cctvActiveCamIndex - 1 + this.layout.bunkerCameras.length) % this.layout.bunkerCameras.length
         );
       }
       if (edge(state.r1, prev?.r1)) {
-        this.selectCctvCamera((this.cctvActiveCamIndex + 1) % this.layout.fnafCameras.length);
+        this.selectCctvCamera((this.cctvActiveCamIndex + 1) % this.layout.bunkerCameras.length);
       }
       if (edge(state.l2, prev?.l2)) {
-        this.toggleFnafDoor('left');
+        this.toggleBunkerDoor('left');
       }
       if (edge(state.r2, prev?.r2)) {
-        this.toggleFnafDoor('right');
+        this.toggleBunkerDoor('right');
       }
       if (edge(state.circle, prev?.circle) || edge(state.options, prev?.options)) {
         this.closeCctvMonitor();
@@ -6138,12 +6216,12 @@ export class HorrorEngine {
       }
     }
 
-    // FNAF Security Power Drain & Auto-Open at 0%
-    const leftDoor = this.layout.doors.find((d) => d.id === 'door_fnaf_left');
-    const rightDoor = this.layout.doors.find((d) => d.id === 'door_fnaf_right');
+    // Cabine 09-A Security Power Drain & Auto-Open at 0%
+    const leftDoor = this.layout.doors.find((d) => d.id === 'door_bunker_left');
+    const rightDoor = this.layout.doors.find((d) => d.id === 'door_bunker_right');
     const closedCount = (leftDoor && !leftDoor.isOpen ? 1 : 0) + (rightDoor && !rightDoor.isOpen ? 1 : 0);
-    const fnafDrainMult = this.hasPerk('fast_hacker') ? 0.85 : 1.0;
-    const drainRate = ((this.cctvOpen ? 1.5 : 0) + closedCount * 3.2) * fnafDrainMult;
+    const bunkerDrainMult = this.hasPerk('fast_hacker') ? 0.85 : 1.0;
+    const drainRate = ((this.cctvOpen ? 1.5 : 0) + closedCount * 3.2) * bunkerDrainMult;
     if (drainRate > 0) {
       this.securityPowerPct = Math.max(0, this.securityPowerPct - drainRate * dt);
       if (this.securityPowerPct <= 0) {
@@ -6151,7 +6229,7 @@ export class HorrorEngine {
         if (rightDoor && !rightDoor.isOpen) rightDoor.isOpen = true;
         this.cctvOpen = false;
         this.audio.playBlackoutPowerDown();
-        this.updateFnafVisualIndicators();
+        this.updateBunkerVisualIndicators();
         this.showBanner('ENERGIA DA SEGURANÇA ESGOTADA! Portas blindadas abriram!');
       }
     } else if (!this.blackoutActive && this.securityPowerPct < 100) {
@@ -6785,13 +6863,27 @@ export class HorrorEngine {
     }
 
     if (aiEvents.hitPlayer && this.invulnerableTimer <= 0) {
+      const isMultiplayerActive = this.isRemoteClient || this.remotePeerRigs.size > 0;
       this.health -= 1;
       this.damageFlash = 1.0;
       this.trauma = 0.9;
       this.triggerHaptic(110, 0.75);
       if (this.health <= 0) {
-        this.triggerJumpscare();
-        return;
+        if (isMultiplayerActive) {
+          // NEVER trigger solo Game Over in Multiplayer! Enter DOWNED (35s crawl + bleedout) -> DEAD_SPECTATING
+          this.health = 0;
+          this.playerLifeState = 'DOWNED';
+          this.bleedoutSec = 35.0;
+          this.crouching = true;
+          this.sprinting = false;
+          this.invulnerableTimer = 3.0;
+          this.audio.playJumpscareImpact();
+          this.showBanner('VOCÊ CAIU! Engatinhe até um aliado para ser reanimado (35s)!');
+          this.emitHud();
+        } else {
+          this.triggerJumpscare();
+          return;
+        }
       } else {
         this.invulnerableTimer = 2.6;
         this.hitBoostTimer = 1.8;
@@ -6893,6 +6985,54 @@ export class HorrorEngine {
       if (dot > 0.56 && hasWallLineOfSight(this.layout, this.px, this.pz, this.ai.x, this.ai.z, this.pFloor)) {
         this.diddyInView = true;
       }
+    }
+
+    // Tick SecurityBunker lure cooldown, creaking boards, DOWNED bleedout, Spectator cam & Neural Interference
+    if (this.bunkerLureCooldownSec > 0) {
+      this.bunkerLureCooldownSec = Math.max(0, this.bunkerLureCooldownSec - dt);
+    }
+    if (this.creakCooldownSec > 0) {
+      this.creakCooldownSec = Math.max(0, this.creakCooldownSec - dt);
+    }
+    if (this.playerLifeState === 'DOWNED') {
+      this.bleedoutSec = Math.max(0, this.bleedoutSec - dt);
+      if (this.bleedoutSec <= 0) {
+        this.playerLifeState = 'DEAD_SPECTATING';
+        this.mpSpectating = true;
+        this.showBanner('Você entrou em Modo Espectador. Acompanhe os aliados vivos ou as câmeras da Cabine 09-A!');
+        this.emitHud();
+      }
+    } else if (this.playerLifeState === 'DEAD_SPECTATING' || this.playerLifeState === 'CAPTURED') {
+      const alivePeers = Array.from(this.remotePeerRigs.values()).filter((p) => p.rig.root.visible && !p.captured);
+      if (alivePeers.length > 0 && !this.cctvOpen) {
+        const target = alivePeers[this.spectateTargetIndex % alivePeers.length];
+        this.spectateTargetName = target.nickname;
+        const tp = target.rig.root.position;
+        this.camera.position.set(tp.x - Math.sin(target.targetYaw) * 2.2, tp.y + 1.85, tp.z - Math.cos(target.targetYaw) * 2.2);
+        this.camera.lookAt(tp.x, tp.y + 1.35, tp.z);
+      }
+    }
+
+    // Creaking Floorboards Trap (standing/sprinting emits creak noise; crouching crosses silently!)
+    if (this.playerLifeState === 'ALIVE' && !this.crouching && this.creakCooldownSec <= 0 && Math.hypot(this.vx, this.vz) > 0.6) {
+      for (const board of CREAKING_FLOORBOARDS) {
+        if (board.floor === this.pFloor && Math.hypot(this.px - board.x, this.pz - board.z) <= board.radius) {
+          this.creakCooldownSec = 3.2;
+          this.audio.playDoorCreak(false, false);
+          this.emitNoise(this.px, this.py, this.pz, this.pFloor, 16.5, 3, 'sprint');
+          this.showBanner('Tábua rangente! Agache [C] para atravessar em silêncio.');
+          break;
+        }
+      }
+    }
+
+    // Neural Interference (CRT static buildup in pitch dark / near P. Drizzy; fades in light or near allies)
+    const inDarkNow = !this.flashlightOn || this.blackoutActive;
+    const nearDiddyNow = this.ai.floor === this.pFloor && diddyDist < 9.5;
+    if (inDarkNow || nearDiddyNow) {
+      this.neuralInterference = Math.min(100, this.neuralInterference + ((nearDiddyNow ? 4.5 : 0) + (inDarkNow ? 2.0 : 0)) * dt);
+    } else {
+      this.neuralInterference = Math.max(0, this.neuralInterference - 5.5 * dt);
     }
 
     const danger = diffCfg.diddyActive ? Math.max(0, Math.min(1, 1 - (diddyDist - 2.5) / 18)) : 0;
@@ -7022,8 +7162,8 @@ export class HorrorEngine {
         sz = 0.86;
         found = true;
       }
-    } else if (prompt.actionType === 'fnaf_door_btn') {
-      const btn = this.layout.fnafButtons.find((b) => b.id === prompt.id);
+    } else if (prompt.actionType === 'bunker_door_btn') {
+      const btn = this.layout.bunkerButtons.find((b) => b.id === prompt.id);
       if (btn) {
         hx = btn.x;
         hy = btn.y;
@@ -7637,14 +7777,14 @@ export class HorrorEngine {
     for (const dv of this.doorVisuals) {
       const target = dv.def.isOpen ? 1 : 0;
       const speed =
-        dv.def.lockType === 'fnaf_blast'
+        dv.def.lockType === 'bunker_blast'
           ? 11.5
           : this.doorSwingSpeed.get(dv.def.id) ?? 6.5;
       const delta = target - dv.def.openProgress;
       if (Math.abs(delta) > 0.005) anyDoorMoved = true;
       dv.def.openProgress += delta * Math.min(1, dt * speed);
       if (dv.blastPanel) {
-        // FNAF Blast Door slides vertically UP into the ceiling housing!
+        // Cabine 09-A Blast Door slides vertically UP into the ceiling housing!
         dv.blastPanel.position.y = dv.def.openProgress * (dv.doorHeight - 0.18);
       } else {
         dv.leafPivot.rotation.y = -dv.def.openProgress * 1.52;
@@ -7806,7 +7946,7 @@ export class HorrorEngine {
       const dy = offsetY + (d.gz + (d.axis === 'z' ? 1 : 0.5)) * scale;
       ctx.strokeStyle = d.isExit
         ? '#ef4444'
-        : d.lockType === 'fnaf_blast'
+        : d.lockType === 'bunker_blast'
         ? '#38bdf8'
         : !d.isUnlocked
         ? '#f59e0b'
@@ -7976,8 +8116,8 @@ export class HorrorEngine {
       ? Math.max(0, Math.min(1, 1 - (diddyDist - 2.5) / 18))
       : 0;
     const exitDoor = this.layout.doors.find((d) => d.isExit);
-    const leftFnaf = this.layout.doors.find((d) => d.id === 'door_fnaf_left');
-    const rightFnaf = this.layout.doors.find((d) => d.id === 'door_fnaf_right');
+    const leftBunker = this.layout.doors.find((d) => d.id === 'door_bunker_left');
+    const rightBunker = this.layout.doors.find((d) => d.id === 'door_bunker_right');
 
     const safeCodeHintDigits: (string | null)[] = [null, null, null, null];
     for (const c of this.layout.clues) {
@@ -8064,11 +8204,11 @@ export class HorrorEngine {
         masterUnlocked: Boolean(exitDoor?.isUnlocked),
       },
       securityPowerPct: Math.round(this.securityPowerPct),
-      securityLeftClosed: Boolean(leftFnaf && !leftFnaf.isOpen),
-      securityRightClosed: Boolean(rightFnaf && !rightFnaf.isOpen),
+      securityLeftClosed: Boolean(leftBunker && !leftBunker.isOpen),
+      securityRightClosed: Boolean(rightBunker && !rightBunker.isOpen),
       cctvOpen: this.cctvOpen,
       cctvActiveCamIndex: this.cctvActiveCamIndex,
-      cctvCameras: this.layout.fnafCameras.map((c) => ({
+      cctvCameras: this.layout.bunkerCameras.map((c) => ({
         id: c.id,
         label: c.label,
         roomName: c.roomName,
@@ -8095,6 +8235,12 @@ export class HorrorEngine {
       frameTimeMs: Math.round(this.frameTimeMsSmoothed * 10) / 10,
       pingMs: this.mpPingMs,
       spectating: this.mpSpectating,
+      playerLifeState: this.playerLifeState,
+      bleedoutSec: this.bleedoutSec,
+      spectateTargetName: this.spectateTargetName,
+      bunkerLureCooldownSec: this.bunkerLureCooldownSec,
+      neuralInterference: Math.round(this.neuralInterference),
+      finalGateSirenSec: this.finalGateSirenSec,
       subtitleText: this.settings.audio.subtitles ? this.subtitleText : null,
       chapter2JustUnlocked: this.chapter2JustUnlocked,
       isNewBestTime: this.isNewBestTime,

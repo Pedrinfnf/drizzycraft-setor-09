@@ -5,7 +5,7 @@ import type {
   Difficulty,
   DoorDefinition,
   FloorId,
-  FnafCameraDefinition,
+  BunkerCameraDefinition,
   FurniturePropDefinition,
   HidingSpotDefinition,
   ItemType,
@@ -109,11 +109,11 @@ export interface MansionLayout {
   workbenches: WorkbenchDefinition[];
   rechargeStations: RechargeStationDefinition[];
   cassettes: CassetteTapeDefinition[];
-  fnafCameras: FnafCameraDefinition[];
+  bunkerCameras: BunkerCameraDefinition[];
   tutorialPlaques: TutorialPlaqueDefinition[];
   furniture: FurniturePropDefinition[];
   furnitureColliders: FurnitureCollider[];
-  fnafButtons: {
+  bunkerButtons: {
     id: string;
     side: 'left' | 'right';
     doorId: string;
@@ -256,7 +256,7 @@ export const STAIRWAYS: StairwayDefinition[] = [
 export const ROOMS: RoomDefinition[] = [
   // Ground Floor (Floor 0) — Complexo Setor 09
   { id: 'hall', name: 'Recepção · Setor 09', floor: 0, x0: 15, z0: 30, x1: 20, z1: 33, surface: 'stone', zoneId: 'start' },
-  { id: 'security_office', name: 'Sala de Segurança · FNAF', floor: 0, x0: 9, z0: 30, x1: 13, z1: 33, surface: 'tile', zoneId: 'start' },
+  { id: 'security_office', name: 'Guarita de Vigilância (Cabine 09-A)', floor: 0, x0: 9, z0: 30, x1: 13, z1: 33, surface: 'tile', zoneId: 'start' },
   { id: 'courtyard', name: 'Pátio Interno · Setor 09', floor: 0, x0: 10, z0: 21, x1: 25, z1: 29, surface: 'stone', zoneId: 'start' },
   { id: 'corridor', name: 'Passagem Central', floor: 0, x0: 16, z0: 10, x1: 19, z1: 20, surface: 'wood', zoneId: 'start' },
   { id: 'west_wing', name: 'Refeitório · Ala Oeste', floor: 0, x0: 4, z0: 13, x1: 7, z1: 33, surface: 'tile', zoneId: 'start' },
@@ -277,6 +277,119 @@ export const ROOMS: RoomDefinition[] = [
   { id: 'boiler', name: 'Subsolo · Caldeira', floor: -1, x0: 9, z0: 16, x1: 14, z1: 26, surface: 'basement_wet', zoneId: 'basement' },
   { id: 'depot', name: 'Subsolo · Depósito Químico', floor: -1, x0: 16, z0: 16, x1: 19, z1: 25, surface: 'concrete', zoneId: 'basement_depot' },
   { id: 'cells', name: 'Subsolo · Celas de Contenção', floor: -1, x0: 21, z0: 16, x1: 26, z1: 26, surface: 'tile', zoneId: 'basement' },
+
+  // Chapter 1 Remaster Expansion (25+ Interconnected Rooms): Outer Garden, Tool Shed, Garage, Secret Attic, Owner Archives & Steam Vault
+  { id: 'outer_garden', name: 'Pátio Externo & Jardim Cercado', floor: 0, x0: 21, z0: 30, x1: 26, z1: 33, surface: 'stone', zoneId: 'start' },
+  { id: 'tool_shed', name: 'Galpão de Ferramentas (Acorrentado)', floor: 0, x0: 27, z0: 32, x1: 31, z1: 34, surface: 'wood', zoneId: 'start' },
+  { id: 'garage', name: 'Garagem & Oficina · Carro de Fuga', floor: 0, x0: 32, z0: 15, x1: 34, z1: 28, surface: 'concrete', zoneId: 'start' },
+  { id: 'owner_archives', name: 'Sala de Arquivos do Dono (Estante Falsa)', floor: 0, x0: 8, z0: 3, x1: 13, z1: 8, surface: 'wood', zoneId: 'red_wing' },
+  { id: 'secret_attic', name: 'Sótão Secreto · Elevador de Carga Cap. 2', floor: 0, x0: 22, z0: 3, x1: 27, z1: 8, surface: 'wood', zoneId: 'blue_wing' },
+  { id: 'steam_vault', name: 'Subsolo · Galeria das Válvulas de Vapor', floor: -1, x0: 5, z0: 16, x1: 7, z1: 26, surface: 'basement_wet', zoneId: 'basement' },
+];
+
+export interface CreakingBoardTrap {
+  id: string;
+  floor: FloorId;
+  x: number;
+  z: number;
+  radius: number;
+}
+
+/** Wooden floorboards that emit a loud creak unless crossed while crouching */
+export const CREAKING_FLOORBOARDS: readonly CreakingBoardTrap[] = [
+  { id: 'creak_corridor_1', floor: 0, x: gridToWorld(17.5), z: gridToWorld(16.0), radius: 1.35 },
+  { id: 'creak_garden_1', floor: 0, x: gridToWorld(23.5), z: gridToWorld(31.5), radius: 1.45 },
+  { id: 'creak_east_1', floor: 0, x: gridToWorld(29.0), z: gridToWorld(22.0), radius: 1.35 },
+  { id: 'creak_archives_1', floor: 0, x: gridToWorld(11.0), z: gridToWorld(6.0), radius: 1.35 },
+];
+
+export interface DiaryLorePage {
+  id: string;
+  title: { 'pt-BR': string; 'en-US': string; 'es-ES': string };
+  body: { 'pt-BR': string; 'en-US': string; 'es-ES': string };
+}
+
+/** 4 Chapter 1 Lore Diary Pages bridging the Mansion (Chapter 1) directly into Sector 09 Deep Complex (Chapter 2) */
+export const CHAPTER1_DIARY_PAGES: readonly DiaryLorePage[] = [
+  {
+    id: 'diary_1',
+    title: {
+      'pt-BR': 'Página 01 — A Guarita 09-A',
+      'en-US': 'Page 01 — Security Bunker 09-A',
+      'es-ES': 'Página 01 — Caseta de Vigilancia 09-A',
+    },
+    body: {
+      'pt-BR': 'O Diretor Neves instalou portas hidráulicas na Cabine 09-A e um sinalizador sonoro remoto para afastar o Sujeito 09 dos corredores. Se a bateria zerar, as portas abrem.',
+      'en-US': 'Director Neves installed hydraulic blast doors in Cabin 09-A and a remote acoustic lure to pull Subject 09 away from the halls. If the reserve battery hits zero, the doors release.',
+      'es-ES': 'El Director Neves instaló puertas hidráulicas en la Cabina 09-A y una señal sonora remota para alejar al Sujeto 09. Si la batería cae a cero, las puertas se abren.',
+    },
+  },
+  {
+    id: 'diary_2',
+    title: {
+      'pt-BR': 'Página 02 — A Estante Falsa & O Carro',
+      'en-US': 'Page 02 — The False Bookshelf & Getaway Car',
+      'es-ES': 'Página 02 — La Estantería Falsa y el Auto',
+    },
+    body: {
+      'pt-BR': 'Os dois emblemas (Sol e Lua) abrem a estante falsa do Arquivo Morto. Na garagem leste há uma viatura funcional: só precisa da bateria, galão de gasolina e a chave do portão.',
+      'en-US': 'The two emblems (Sun & Moon) slide open the false bookshelf in the Archives. In the east garage sits a working getaway car: it only needs a battery, gas can, and garage key.',
+      'es-ES': 'Los dos emblemas (Sol y Luna) abren la estantería falsa. En el garaje este hay un auto funcional: solo falta batería, gasolina y la llave del portón.',
+    },
+  },
+  {
+    id: 'diary_3',
+    title: {
+      'pt-BR': 'Página 03 — Protocolo de 4 Etapas do Portão',
+      'en-US': 'Page 03 — 4-Stage Gate Escape Protocol',
+      'es-ES': 'Página 03 — Protocolo de Escape de 4 Etapas',
+    },
+    body: {
+      'pt-BR': 'Para abrir o Portão Norte: 2 fusíveis no porão, cortar 2 correntes com alicate pesado, Chave Mestra + senha de 6 dígitos (metade na Cabine 09-A, metade no Sótão) e aguentar 15s de sirene.',
+      'en-US': 'To open the North Gate: restore 2 basement fuses, cut 2 heavy chains, insert Master Key + 6-digit code (split between Cabin 09-A and Attic), and survive 15s of siren.',
+      'es-ES': 'Para abrir el Portón Norte: 2 fusibles en el sótano, cortar 2 cadenas, Llave Maestra + código de 6 dígitos (Cabina 09-A y Ático) y resistir 15s de sirena.',
+    },
+  },
+  {
+    id: 'diary_4',
+    title: {
+      'pt-BR': 'Página 04 — O Elevador de Carga (Capítulo 2)',
+      'en-US': 'Page 04 — The Hidden Cargo Elevator (Chapter 2)',
+      'es-ES': 'Página 04 — El Elevador de Carga (Capítulo 2)',
+    },
+    body: {
+      'pt-BR': 'Atrás do Sótão Secreto existe um elevador de carga que desce direto para os 36 setores profundos do Laboratório Ômega. É para lá que levaram os outros sobreviventes...',
+      'en-US': 'Behind the Secret Attic lies a hidden cargo elevator descending straight into the 36 deep sectors of the Omega Facility. That is where they took the other survivors...',
+      'es-ES': 'Detrás del Ático Secreto existe un elevador de carga que baja directo a los 36 sectores profundos del Laboratorio Omega. Allí llevaron a los demás sobrevivientes...',
+    },
+  },
+];
+
+export interface DubbedAudioTape {
+  id: string;
+  speaker: 'marcos' | 'helena';
+  lines: { 'pt-BR': string; 'en-US': string; 'es-ES': string };
+}
+
+export const CHAPTER1_DUBBED_TAPES: readonly DubbedAudioTape[] = [
+  {
+    id: 'ch1_tape_01',
+    speaker: 'marcos',
+    lines: {
+      'pt-BR': 'Fita 01 — Marcos falando da Cabine 09-A. Não pise nas tábuas soltas do corredor sem agachar! Use a Câmera Polaroid no rosto dele se precisar de 3 segundos para fugir.',
+      'en-US': 'Tape 01 — Marcos reporting from Cabin 09-A. Never step on loose floorboards standing up! Flash the Polaroid Camera in his face if you need 3 seconds to escape.',
+      'es-ES': 'Cinta 01 — Marcos desde Cabina 09-A. ¡No pises las tablas sueltas sin agacharte! Usa el flash de la Cámara Polaroid si necesitas 3 segundos para huir.',
+    },
+  },
+  {
+    id: 'ch1_tape_02',
+    speaker: 'helena',
+    lines: {
+      'pt-BR': 'Fita 02 — Dra. Helena. A interferência neural piora no breu e perto do Sujeito 09. Fique junto dos aliados, use a lanterna ou tome o Supressor de Frequência antes de descer ao Capítulo 2.',
+      'en-US': 'Tape 02 — Dr. Helena. Neural interference worsens in pitch dark and near Subject 09. Stay near allies, keep lights on, or take Frequency Suppressor pills before descending to Chapter 2.',
+      'es-ES': 'Cinta 02 — Dra. Helena. La interferencia neural empeora en la oscuridad cerca del Sujeto 09. Quédate con aliados, usa luz o toma el Supresor de Frecuencia antes del Capítulo 2.',
+    },
+  },
 ];
 
 export const VENT_DUCTS: VentDuctDefinition[] = [
@@ -309,7 +422,7 @@ const KEY_AND_TOOL_ANCHORS: ItemAnchor[] = [
   { id: 'a_east_north', floor: 0, gx: 29.2, gz: 15.2, zoneId: 'start', roomId: 'east_wing', roomName: 'Oficina', yOffset: 0.94, needsSideTable: true },
   { id: 'a_gallery_west', floor: 0, gx: 10.6, gz: 10.6, zoneId: 'start', roomId: 'north_gallery', roomName: 'Corredor Norte', yOffset: 0.94, needsSideTable: true },
   { id: 'a_gallery_east', floor: 0, gx: 24.4, gz: 10.6, zoneId: 'start', roomId: 'north_gallery', roomName: 'Corredor Norte', yOffset: 0.94, needsSideTable: true },
-  { id: 'a_security_drawer', floor: 0, gx: 12.2, gz: 33.15, zoneId: 'start', roomId: 'security_office', roomName: 'Sala de Segurança', yOffset: 0.72, drawerId: 'furn_drawer_fnaf_r' },
+  { id: 'a_security_drawer', floor: 0, gx: 12.2, gz: 33.15, zoneId: 'start', roomId: 'security_office', roomName: 'Sala de Segurança', yOffset: 0.72, drawerId: 'furn_drawer_bunker_r' },
   { id: 'a_corridor_alcove', floor: 0, gx: 18.6, gz: 14.5, zoneId: 'start', roomId: 'corridor', roomName: 'Passagem Central', yOffset: 0.94, needsSideTable: true },
   { id: 'a_shop_drawer', floor: 0, gx: 30.8, gz: 17.5, zoneId: 'start', roomId: 'east_wing', roomName: 'Oficina', yOffset: 0.72, drawerId: 'furn_drawer_shop' },
 
@@ -552,15 +665,15 @@ function buildArchitectureGrids(): {
   // ---- GROUND FLOOR (FLOOR 0) ----
   // 1. Recepção (South Gatehouse — open, with tutorial boards!)
   fillRect(floor0, surface0, 15, 30, 20, 33, CELL_FLOOR, 'stone');
-  // 2. Sala de Segurança FNAF (between Refeitório and Recepção, hermetically sealed except 2 blast doors!)
+  // 2. Sala de Segurança Cabine 09-A (between Refeitório and Recepção, hermetically sealed except 2 blast doors!)
   fillRect(floor0, surface0, 9, 30, 13, 33, CELL_FLOOR, 'tile');
   // 3. Pátio Interno Voxel (open night sky!)
   fillRect(floor0, surface0, 10, 21, 25, 29, CELL_COURTYARD, 'stone');
-  // Solid north wall separating Courtyard from FNAF Security Office (keeps Reception x=15..20 wide open!)
+  // Solid north wall separating Courtyard from SecurityBunker (Cabine 09-A) (keeps Reception x=15..20 wide open!)
   fillRect(floor0, surface0, 9, 29, 14, 29, CELL_VOID, 'stone');
   // 4. Passagem Central (connects Pátio <-> Corredor Norte)
   fillRect(floor0, surface0, 16, 10, 19, 20, CELL_FLOOR, 'wood');
-  // 5. Refeitório · Ala Oeste (full height z=13..33 so it links to FNAF Left Blast Door!)
+  // 5. Refeitório · Ala Oeste (full height z=13..33 so it links to Cabine 09-A Left Blast Door!)
   fillRect(floor0, surface0, 4, 13, 7, 33, CELL_FLOOR, 'tile');
   // 6. Oficina · Ala Leste
   fillRect(floor0, surface0, 27, 13, 31, 31, CELL_FLOOR, 'wood');
@@ -573,9 +686,9 @@ function buildArchitectureGrids(): {
   fillRect(floor0, surface0, 8, 21, 9, 22, CELL_FLOOR, 'stone');
   fillRect(floor0, surface0, 26, 21, 26, 22, CELL_FLOOR, 'stone');
 
-  // FNAF Blast Door openings (exact 2-cell width at gz=31..32, flanked by solid walls!)
-  fillRect(floor0, surface0, 8, 31, 8, 32, CELL_FLOOR, 'tile'); // Left FNAF Blast Door
-  fillRect(floor0, surface0, 14, 31, 14, 32, CELL_FLOOR, 'tile'); // Right FNAF Blast Door
+  // Cabine 09-A Blast Door openings (exact 2-cell width at gz=31..32, flanked by solid walls!)
+  fillRect(floor0, surface0, 8, 31, 8, 32, CELL_FLOOR, 'tile'); // Left Cabine 09-A Blast Door
+  fillRect(floor0, surface0, 14, 31, 14, 32, CELL_FLOOR, 'tile'); // Right Cabine 09-A Blast Door
 
   // Ground-Floor Voxel Ventilation Ducts (CELL_VENT = 5 — crouch-only tactical flanking!)
   fillRect(floor0, surface0, 8, 26, 9, 26, CELL_VENT, 'vent_metal'); // Refeitório <-> Pátio
@@ -652,16 +765,16 @@ function buildArchitectureGrids(): {
 
 function buildDoors(): DoorDefinition[] {
   return [
-    // FNAF Security Office Dual Electric Blast Doors (start OPEN, slam CLOSED via wall buttons!)
+    // SecurityBunker (Cabine 09-A) Dual Electric Blast Doors (start OPEN, slam CLOSED via wall buttons!)
     {
-      id: 'door_fnaf_left',
-      name: 'Porta Blindada Oeste (FNAF)',
+      id: 'door_bunker_left',
+      name: 'Porta Hidráulica Oeste (Cabine 09-A)',
       floor: 0,
       gx: 8,
       gz: 31,
       spanCells: 2,
       axis: 'z',
-      lockType: 'fnaf_blast',
+      lockType: 'bunker_blast',
       zoneA: 'start',
       zoneB: 'start',
       isOpen: true,
@@ -669,14 +782,14 @@ function buildDoors(): DoorDefinition[] {
       openProgress: 1,
     },
     {
-      id: 'door_fnaf_right',
-      name: 'Porta Blindada Leste (FNAF)',
+      id: 'door_bunker_right',
+      name: 'Porta Hidráulica Leste (Cabine 09-A)',
       floor: 0,
       gx: 14,
       gz: 31,
       spanCells: 2,
       axis: 'z',
-      lockType: 'fnaf_blast',
+      lockType: 'bunker_blast',
       zoneA: 'start',
       zoneB: 'start',
       isOpen: true,
@@ -880,12 +993,12 @@ function buildCassettes(): CassetteTapeDefinition[] {
     {
       id: 'tape_1',
       title: 'Fita #1 · Turno da Noite 09',
-      roomName: 'Sala de Segurança · FNAF',
+      roomName: 'Guarita de Vigilância (Cabine 09-A)',
       floor: 0,
       x: gridToWorld(10.0),
       y: FLOOR_0_Y + 0.72,
       z: gridToWorld(33.15),
-      drawerId: 'furn_drawer_fnaf',
+      drawerId: 'furn_drawer_bunker',
       transcript:
         '"Vigia Marcos aqui. As portas blindadas desta guarita seguram o P. Drizzy pelos botões da parede, mas drenam a bateria do bloco. Vigie os corredores pelo Monitor CCTV — desde o vazamento do Composto 09, ele não reconhece mais ninguém."',
       listened: false,
@@ -931,7 +1044,7 @@ function buildCassettes(): CassetteTapeDefinition[] {
   ];
 }
 
-function buildFnafCameras(cameraSecretCode: string): FnafCameraDefinition[] {
+function buildBunkerCameras(cameraSecretCode: string): BunkerCameraDefinition[] {
   return [
     {
       id: 'cam_01',
@@ -1034,7 +1147,7 @@ function buildTutorialPlaques(): TutorialPlaqueDefinition[] {
     {
       id: 'tut_3',
       title: 'GUARITA & DEFESA',
-      lines: ['Sala FNAF a Esquerda!', 'Cameras CCTV + 2 Portas', 'Bancada junta 2 pecas', 'Stun atordoa P. Drizzy!'],
+      lines: ['Sala Cabine 09-A a Esquerda!', 'Cameras CCTV + 2 Portas', 'Bancada junta 2 pecas', 'Stun atordoa P. Drizzy!'],
       floor: 0,
       x: gridToWorld(19.4),
       y: FLOOR_0_Y + 1.65,
@@ -1056,13 +1169,13 @@ function buildFurniture(): FurniturePropDefinition[] {
     { id: 'furn_plant_rec_r', kind: 'potted_plant', floor: 0, x: gridToWorld(20.1), y: FLOOR_0_Y, z: gridToWorld(30.3), facingYaw: 0 },
     { id: 'furn_lamp_rec', kind: 'standing_lamp', floor: 0, x: gridToWorld(20.1), y: FLOOR_0_Y, z: gridToWorld(33.1), facingYaw: 0 },
 
-    // Sala de Segurança FNAF — Bancada CCTV com PC+Teclado+Mouse, Cadeira derrubada+Café, 2 Gavetas, Planta Baixa & Cabos
-    { id: 'furn_fnaf_desk', kind: 'desk_monitor', floor: 0, x: gridToWorld(11), y: FLOOR_0_Y, z: gridToWorld(30.25), facingYaw: 0, label: 'Monitor CCTV' },
+    // Sala de Segurança Cabine 09-A — Bancada CCTV com PC+Teclado+Mouse, Cadeira derrubada+Café, 2 Gavetas, Planta Baixa & Cabos
+    { id: 'furn_bunker_desk', kind: 'desk_monitor', floor: 0, x: gridToWorld(11), y: FLOOR_0_Y, z: gridToWorld(30.25), facingYaw: 0, label: 'Monitor CCTV' },
     { id: 'furn_coffee_spill', kind: 'coffee_spill', floor: 0, x: gridToWorld(11.0), y: FLOOR_0_Y, z: gridToWorld(31.9), facingYaw: 0.35 },
-    { id: 'furn_drawer_fnaf', kind: 'drawer_cabinet', floor: 0, x: gridToWorld(10.0), y: FLOOR_0_Y, z: gridToWorld(33.15), facingYaw: Math.PI, label: 'Gaveta da Segurança (Fita)', opened: false, openProgress: 0 },
-    { id: 'furn_drawer_fnaf_r', kind: 'drawer_cabinet', floor: 0, x: gridToWorld(12.2), y: FLOOR_0_Y, z: gridToWorld(33.15), facingYaw: Math.PI, label: 'Gaveta de Suprimentos FNAF', opened: false, openProgress: 0 },
-    { id: 'furn_frame_fnaf', kind: 'wall_frame', floor: 0, x: gridToWorld(11.0), y: FLOOR_0_Y + 2.22, z: gridToWorld(29.56), facingYaw: 0, variant: 2 },
-    { id: 'furn_cable_fnaf', kind: 'cable_conduit', floor: 0, x: gridToWorld(12.6), y: FLOOR_0_Y + 2.6, z: gridToWorld(29.56), facingYaw: 0 },
+    { id: 'furn_drawer_bunker', kind: 'drawer_cabinet', floor: 0, x: gridToWorld(10.0), y: FLOOR_0_Y, z: gridToWorld(33.15), facingYaw: Math.PI, label: 'Gaveta da Segurança (Fita)', opened: false, openProgress: 0 },
+    { id: 'furn_drawer_bunker_r', kind: 'drawer_cabinet', floor: 0, x: gridToWorld(12.2), y: FLOOR_0_Y, z: gridToWorld(33.15), facingYaw: Math.PI, label: 'Gaveta de Suprimentos Cabine 09-A', opened: false, openProgress: 0 },
+    { id: 'furn_frame_bunker', kind: 'wall_frame', floor: 0, x: gridToWorld(11.0), y: FLOOR_0_Y + 2.22, z: gridToWorld(29.56), facingYaw: 0, variant: 2 },
+    { id: 'furn_cable_bunker', kind: 'cable_conduit', floor: 0, x: gridToWorld(12.6), y: FLOOR_0_Y + 2.6, z: gridToWorld(29.56), facingYaw: 0 },
 
     // Pátio Interno — Banco quebrado, Placa de Alas, Câmera CCTV, Plantas & Aviso de Quarentena
     { id: 'furn_bench_broken', kind: 'bench_broken', floor: 0, x: gridToWorld(17.5), y: FLOOR_0_Y, z: gridToWorld(28.0), facingYaw: 0.16 },
@@ -1558,7 +1671,7 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
 
   // Narrative Sector Lighting Palette:
   // - Recepção / Oficina / Corredor: warm sodium tungsten
-  // - Sala de Segurança FNAF: pale phosphor teal CRT glow
+  // - Sala de Segurança Cabine 09-A: pale phosphor teal CRT glow
   // - Enfermaria (Azul): icy clinical sterile blue
   // - Vestíbulo de Saída (Alçapão Nível -2): emergency crimson red
   // - Subsolo Caldeira: warm rusty boiler amber
@@ -1598,12 +1711,12 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
   const rechargeStations = buildRechargeStations();
   const tutorialPlaques = buildTutorialPlaques();
 
-  // Physical Wall Door Buttons mounted FLUSH inside the FNAF Security Office right beside BOTH Blast Doors!
-  const fnafButtons = [
+  // Physical Wall Door Buttons mounted FLUSH inside the SecurityBunker (Cabine 09-A) right beside BOTH Blast Doors!
+  const bunkerButtons = [
     {
-      id: 'btn_fnaf_left',
+      id: 'btn_bunker_left',
       side: 'left' as const,
-      doorId: 'door_fnaf_left',
+      doorId: 'door_bunker_left',
       floor: 0 as FloorId,
       x: gridToWorld(8.57), // inner west wall face is 8.5 -> 0.11m proud inside the room!
       y: FLOOR_0_Y + 1.32,
@@ -1611,9 +1724,9 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
       facingYaw: Math.PI / 2,
     },
     {
-      id: 'btn_fnaf_right',
+      id: 'btn_bunker_right',
       side: 'right' as const,
-      doorId: 'door_fnaf_right',
+      doorId: 'door_bunker_right',
       floor: 0 as FloorId,
       x: gridToWorld(13.43), // inner east wall face is 13.5 -> 0.11m proud inside the room!
       y: FLOOR_0_Y + 1.32,
@@ -1637,7 +1750,7 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
     uvMarks,
     clues,
     safe,
-    fnafButtons,
+    bunkerButtons,
   });
 
   // Abandoned Complex Atmosphere: Reflective Organic Puddles (with ceiling water drops in Subsolo), Corner Cobwebs, Courtyard Grass/Leaves & Pipe Steam Vents
@@ -1655,7 +1768,7 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
   const cobwebs = [
     { id: 'web_hall_1', floor: 0 as FloorId, x: gridToWorld(15.25), y: GROUND_CEILING_H - 0.55, z: gridToWorld(30.25), rotY: Math.PI / 4, scale: 1.05 },
     { id: 'web_hall_2', floor: 0 as FloorId, x: gridToWorld(20.15), y: GROUND_CEILING_H - 0.55, z: gridToWorld(33.15), rotY: -Math.PI * 0.75, scale: 0.95 },
-    { id: 'web_fnaf', floor: 0 as FloorId, x: gridToWorld(9.25), y: GROUND_CEILING_H - 0.55, z: gridToWorld(30.25), rotY: Math.PI / 4, scale: 0.9 },
+    { id: 'web_bunker', floor: 0 as FloorId, x: gridToWorld(9.25), y: GROUND_CEILING_H - 0.55, z: gridToWorld(30.25), rotY: Math.PI / 4, scale: 0.9 },
     { id: 'web_west', floor: 0 as FloorId, x: gridToWorld(4.25), y: GROUND_CEILING_H - 0.55, z: gridToWorld(13.3), rotY: Math.PI / 4, scale: 1.1 },
     { id: 'web_east', floor: 0 as FloorId, x: gridToWorld(30.9), y: GROUND_CEILING_H - 0.55, z: gridToWorld(13.3), rotY: -Math.PI / 4, scale: 1.1 },
     { id: 'web_office', floor: 0 as FloorId, x: gridToWorld(10.3), y: GROUND_CEILING_H - 0.55, z: gridToWorld(19.1), rotY: Math.PI * 0.75, scale: 1.0 },
@@ -1707,11 +1820,11 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
     workbenches,
     rechargeStations,
     cassettes: buildCassettes(),
-    fnafCameras: buildFnafCameras(cameraSecretCode),
+    bunkerCameras: buildBunkerCameras(cameraSecretCode),
     tutorialPlaques,
     furniture,
     furnitureColliders: buildFurnitureColliders(furniture),
-    fnafButtons,
+    bunkerButtons,
     cctvMonitorPos: { x: gridToWorld(11), y: FLOOR_0_Y + 1.15, z: gridToWorld(30.55), floor: 0 },
     spawnPoint,
     diddySpawnPoint,
@@ -1837,7 +1950,7 @@ interface ObstacleSourceSet {
   uvMarks: UvMarkDefinition[];
   clues: ArgCluePlacement[];
   safe: SafeDefinition;
-  fnafButtons: { x: number; y: number; z: number; floor: FloorId }[];
+  bunkerButtons: { x: number; y: number; z: number; floor: FloorId }[];
 }
 
 export function collectFloorObstacleBoxes(src: Omit<ObstacleSourceSet, 'floor0' | 'floorMinus1' | 'rooms' | 'doors'>, floor: FloorId): Box3[] {
@@ -1895,7 +2008,7 @@ export function collectFloorObstacleBoxes(src: Omit<ObstacleSourceSet, 'floor0' 
       )
     );
   }
-  for (const btn of src.fnafButtons) {
+  for (const btn of src.bunkerButtons) {
     if (btn.floor === floor) {
       boxes.push(
         new Box3(new Vector3(btn.x - 0.32, btn.y - 0.4, btn.z - 0.32), new Vector3(btn.x + 0.32, btn.y + 0.4, btn.z + 0.32))
@@ -2199,8 +2312,8 @@ export function isDoorBlockingCell(
         : gx === d.gx && gz >= d.gz && gz < d.gz + span;
     if (!matches) continue;
 
-    // Powered FNAF Blast Doors block BOTH player and P. Diddy when closed!
-    if (d.lockType === 'fnaf_blast') {
+    // Powered SecurityBunker Hydraulic Doors block BOTH player and P. Diddy when closed!
+    if (d.lockType === 'bunker_blast') {
       if (!d.isOpen && d.openProgress < 0.72) return d;
       return null;
     }

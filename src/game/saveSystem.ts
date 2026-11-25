@@ -175,7 +175,7 @@ export const PERK_CATALOG: readonly PerkDefinition[] = [
   {
     id: 'fast_hacker',
     name: 'Hacker Rápido',
-    shortDesc: '-25% tempo em terminais, -15% energia FNAF',
+    shortDesc: '-25% tempo em terminais, -15% energia Cabine 09-A',
     detailedDesc: 'Acelera leitura de terminais e pistas UV em 25% e reduz o gasto das portas blindadas em 15%.',
     cost: 280,
     tier: 'base',
@@ -534,7 +534,7 @@ export const ACHIEVEMENT_CATALOG: readonly AchievementDefinition[] = [
     rewardCoins: 250,
   },
   {
-    id: 'fnaf_guardian',
+    id: 'bunker_guardian',
     title: 'Guardião da Guarita',
     description: 'Opere o monitor CCTV e sobreviva mantendo energia na sala de segurança.',
     category: 'exploration',

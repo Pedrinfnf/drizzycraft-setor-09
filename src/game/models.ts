@@ -5,7 +5,7 @@ import type {
   DiddyAnimState,
   DiddySkinId,
   DoorDefinition,
-  FnafCameraDefinition,
+  BunkerCameraDefinition,
   FurniturePropDefinition,
   GloveSkinId,
   HidingSpotDefinition,
@@ -36,7 +36,7 @@ import {
   createSculptedCourtyardPillarVisual,
   createSculptedDirtyGlassWindowVisual,
   createSculptedDoorVisual,
-  createSculptedFnafDoorButtonVisual,
+  createSculptedBunkerDoorButtonVisual,
   createSculptedHidingSpotVisual,
   createSculptedRechargeStationVisual,
   createSculptedSafeVisual,
@@ -870,7 +870,7 @@ export interface DoorVisual {
 /**
  * High-density Micro-Voxel Sculpted Door Builder:
  * Double stepped jambs, pinned hinges, lever handles, key escutcheons, barred cracked viewports,
- * nail-splintered planks, brass padlocks, and corrugated FNAF vertical blast doors.
+ * nail-splintered planks, brass padlocks, and corrugated Cabine 09-A vertical blast doors.
  */
 export function createDoorVisual(def: DoorDefinition, pack: MaterialPack, cellSize: number): DoorVisual {
   return createSculptedDoorVisual(def, pack, cellSize);
@@ -1188,19 +1188,19 @@ export function createCassetteRecorderVisual(tape: CassetteTapeDefinition): {
 }
 
 /**
- * Ceiling-mounted Sculpted Security Camera for FNAF CCTV System (CAM 01..CAM 06).
+ * Ceiling-mounted Sculpted Security Camera for Cabine 09-A CCTV System (CAM 01..CAM 06).
  */
-export function createSecurityCameraVisual(cam: FnafCameraDefinition): THREE.Group {
+export function createSecurityCameraVisual(cam: BunkerCameraDefinition): THREE.Group {
   return createSculptedSecurityCameraVisual(cam);
 }
 
 /**
- * Prominent Wall-Mounted Sculpted FNAF Blast Door Control Box (Left / Right Security Door).
+ * Prominent Wall-Mounted Sculpted Cabine 09-A Blast Door Control Box (Left / Right Security Door).
  */
-export function createFnafDoorButtonVisual(
+export function createBunkerDoorButtonVisual(
   btn: { x: number; y: number; z: number; facingYaw: number; side: 'left' | 'right' }
 ): { group: THREE.Group; buttonMat: THREE.MeshStandardMaterial } {
-  return createSculptedFnafDoorButtonVisual(btn);
+  return createSculptedBunkerDoorButtonVisual(btn);
 }
 
 /**

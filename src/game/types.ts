@@ -26,6 +26,19 @@ export type GameMode =
   | 'victory'
   | 'defeat';
 
+export type MatchPhase =
+  | 'LOBBY'
+  | 'INTRO'
+  | 'PLAYING'
+  | 'ENDED_VICTORY'
+  | 'ENDED_WIPEOUT';
+
+export type PlayerLifeState =
+  | 'ALIVE'
+  | 'DOWNED'
+  | 'CAPTURED'
+  | 'DEAD_SPECTATING';
+
 export type ItemType =
   | 'flashlight'
   | 'stun_gun'
@@ -41,7 +54,19 @@ export type ItemType =
   | 'fuse'
   | 'wire_cutters'
   | 'master_key'
-  | 'flare';
+  | 'flare'
+  | 'oil_can'
+  | 'alarm_clock'
+  | 'polaroid_camera'
+  | 'lockpick'
+  | 'cell_key'
+  | 'medkit'
+  | 'gas_can'
+  | 'car_battery'
+  | 'garage_key'
+  | 'freq_pills'
+  | 'emblem_sun'
+  | 'emblem_moon';
 
 export type WorldPickupType = ItemType | 'battery' | 'stun_ammo';
 
@@ -52,7 +77,7 @@ export type DoorLockType =
   | 'basement_key'
   | 'crowbar_planks'
   | 'wire_cutters'
-  | 'fnaf_blast'
+  | 'bunker_blast'
   | 'master_exit';
 
 export type HidingSpotKind = 'locker' | 'under_table' | 'under_bed';
@@ -345,7 +370,7 @@ export interface VentDuctDefinition {
   z1: number;
 }
 
-export interface FnafCameraDefinition {
+export interface BunkerCameraDefinition {
   id: string;
   label: string;
   roomName: string;
@@ -589,7 +614,7 @@ export interface InteractPrompt {
     | 'recharge'
     | 'cassette'
     | 'cctv_monitor'
-    | 'fnaf_door_btn'
+    | 'bunker_door_btn'
     | 'generator_lever'
     | 'drawer'
     | 'translation_board'
@@ -718,7 +743,16 @@ export interface HudSnapshot {
   maxBattery?: number;
   frameTimeMs?: number; // Smoothed frame time for FPS + ms counter
   pingMs?: number | null; // Multiplayer round-trip latency (null when offline/solo)
-  spectating?: boolean; // Multiplayer spectator mode after capture
+  spectating?: boolean; // Multiplayer spectator mode after capture/death
+  matchPhase?: MatchPhase;
+  playerLifeState?: PlayerLifeState;
+  bleedoutSec?: number; // 35s countdown while DOWNED
+  reviveProgressPct?: number; // 0..100 revive progress
+  spectateTargetName?: string | null;
+  bunkerLureCooldownSec?: number; // 25s cooldown for SecurityBunker remote acoustic lure
+  neuralInterference?: number; // 0..100 CRT static & phantom whisper intensity
+  finalGateSirenSec?: number; // 15s frenzy siren countdown while hydraulic gate rises
+  finalGateStage?: number; // 0..4 completed protocol stages
   activePerks?: PerkId[];
   lastEndingId?: EndingId | null;
   lastMissionReport?: MissionReportSnapshot | null;
@@ -782,7 +816,7 @@ export type AchievementId =
   | 'taser_specialist'
   | 'flare_tactician'
   | 'breath_of_steel'
-  | 'fnaf_guardian'
+  | 'bunker_guardian'
   | 'field_engineer'
   | 'shadow_crawler'
   | 'lights_out'

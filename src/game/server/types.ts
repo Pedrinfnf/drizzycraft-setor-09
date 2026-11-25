@@ -5,9 +5,13 @@ import type {
   EndingId,
   FloorId,
   ItemType,
+  MatchPhase,
   PerkId,
+  PlayerLifeState,
   WorldPickupType,
 } from '../types';
+
+export type { MatchPhase, PlayerLifeState };
 
 export const SERVER_TICK_MS = 10;
 export const SERVER_TICK_SEC = 0.01;
@@ -15,6 +19,11 @@ export const SERVER_MAX_FRAME_DT = 0.1; // Clamp accumulator dt so mobile never 
 export const BROADCAST_INTERVAL_TICKS = 3; // 33.3Hz compact delta broadcast
 export const SELF_HEAL_SNAPSHOT_TICKS = 200; // Full reconciliation snapshot every 2.0s
 export const LAG_COMP_HISTORY_TICKS = 30; // 300ms hitbox lag-compensation ring buffer
+export const DOWNED_BLEEDOUT_SEC = 35.0;
+export const REVIVE_DURATION_NORMAL_SEC = 4.0;
+export const REVIVE_DURATION_MEDKIT_SEC = 2.0;
+export const BUNKER_LURE_COOLDOWN_SEC = 25.0;
+export const FINAL_GATE_SIREN_SEC = 15.0;
 
 /**
  * Key progression items that MUST auto-drop on accessible ground if a carrier
@@ -40,8 +49,14 @@ export interface PlayerState {
   platform: PlayerPlatformId;
   connected: boolean;
   alive: boolean;
+  lifeState: PlayerLifeState;
+  bleedoutSec: number;
+  reviveProgressSec: number;
+  captureCount: number;
   capturedInCell: boolean;
   spectating: boolean;
+  polaroidCharges: number;
+  neuralInterference: number;
   x: number;
   y: number;
   z: number;
@@ -105,8 +120,40 @@ export interface DoorServerState {
   isUnlocked: boolean;
   /** Explicit inverse of isUnlocked so locked/open are always tracked independently */
   locked: boolean;
+  oiled?: boolean;
   planksRemoved: boolean;
   electronicUnlocked: boolean;
+}
+
+export interface MansionPuzzlesState {
+  bookshelfEmblemsPlaced: ('emblem_sun' | 'emblem_moon')[];
+  bookshelfOpened: boolean;
+  pianoNotesEntered: string[];
+  pianoSolved: boolean;
+  steamValvesTurned: number[];
+  steamSolved: boolean;
+  polaroidClueRevealed: boolean;
+  garageCarParts: ('car_battery' | 'gas_can' | 'garage_key')[];
+  garageCarReady: boolean;
+}
+
+export interface FinalGateProtocolState {
+  fusesRestored: number; // 0..2
+  chainsCut: number; // 0..2
+  masterKeyInserted: boolean;
+  sixDigitCodeVerified: boolean;
+  sixDigitCode: string; // Split between SecurityBunker CRT (first 3) & Secret Attic (last 3)
+  hydraulicLeverProgress: number; // 0..1 (2x faster with 2 players!)
+  hydraulicLeverPulled: boolean;
+  sirenActive: boolean;
+  sirenRemainingSec: number; // 15.0s countdown while gate rises slowly
+  gateFullyOpen: boolean;
+}
+
+export interface AtmosphericEventState {
+  corridorPowerDipSec: number;
+  thunderFlashIntensity: number;
+  nextEventTimerSec: number;
 }
 
 export interface GameWorldState {
@@ -116,6 +163,7 @@ export interface GameWorldState {
   difficulty: Difficulty;
   elapsedSec: number;
   phase: 'lobby' | 'playing' | 'ended';
+  matchPhase: MatchPhase;
   endingId: EndingId | null;
   players: Record<string, PlayerState>;
   diddy: DiddyServerState;
@@ -128,8 +176,12 @@ export interface GameWorldState {
   terminalUnlocked: boolean;
   hatchOpened: boolean;
   securityPowerPct: number;
-  fnafLeftClosed: boolean;
-  fnafRightClosed: boolean;
+  bunkerLeftClosed: boolean;
+  bunkerRightClosed: boolean;
+  bunkerLureCooldownSec: number;
+  puzzles: MansionPuzzlesState;
+  finalGate: FinalGateProtocolState;
+  atmosphere: AtmosphericEventState;
   discoveredClueIds: string[];
   discoveredUvMarkIds: string[];
   listenedCassetteIds: string[];
@@ -157,7 +209,7 @@ export type ClientIntent =
   | { type: 'pickup_item'; itemId: string }
   | { type: 'drop_item'; slotIndex: number }
   | { type: 'interact_door'; doorId: string }
-  | { type: 'toggle_fnaf_door'; side: 'left' | 'right' }
+  | { type: 'toggle_bunker_door'; side: 'left' | 'right' }
   | { type: 'submit_safe_code'; code: string }
   | { type: 'submit_terminal_code'; code: string }
   | { type: 'interact_generator' }
@@ -174,7 +226,23 @@ export type ClientIntent =
   | { type: 'enter_hiding'; spotId: string }
   | { type: 'exit_hiding' }
   | { type: 'rescue_ally'; targetPlayerId: string }
-  | { type: 'capture_player'; targetPlayerId: string };
+  | { type: 'capture_player'; targetPlayerId: string }
+  | { type: 'revive_ally'; targetPlayerId: string; dtSec?: number }
+  | { type: 'trigger_bunker_lure'; targetX?: number; targetZ?: number }
+  | { type: 'give_item'; targetPlayerId: string; slotIndex: number }
+  | { type: 'oil_door'; doorId: string }
+  | { type: 'throw_alarm_clock'; x: number; z: number }
+  | { type: 'fire_polaroid'; yaw: number; pitch: number }
+  | { type: 'use_freq_pills' }
+  | { type: 'place_bookshelf_emblem'; emblem: 'emblem_sun' | 'emblem_moon' }
+  | { type: 'input_piano_note'; note: string }
+  | { type: 'turn_steam_valve'; valveIndex: 1 | 2 | 3 }
+  | { type: 'install_garage_part'; part: 'car_battery' | 'gas_can' | 'garage_key' }
+  | { type: 'final_gate_install_fuse' }
+  | { type: 'final_gate_cut_chain' }
+  | { type: 'final_gate_submit_master_code'; code: string }
+  | { type: 'final_gate_pull_lever'; dtSec?: number; helpersCount?: number }
+  | { type: 'trigger_creak_board'; x: number; z: number };
 
 export interface IntentResult {
   ok: boolean;
@@ -222,7 +290,13 @@ export interface ServerEvent {
     | 'diddy_stunned'
     | 'player_hit'
     | 'player_captured'
+    | 'player_downed'
+    | 'player_revived'
+    | 'player_spectating'
     | 'player_rescued'
+    | 'bunker_lure_fired'
+    | 'puzzle_solved'
+    | 'final_gate_siren'
     | 'ending_triggered';
   playerId?: string;
   targetId?: string;

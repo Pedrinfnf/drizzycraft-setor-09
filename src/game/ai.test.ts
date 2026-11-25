@@ -299,12 +299,12 @@ test('Phase 1 Stun Gun durations scale fairly by difficulty (Easy=12s, Hard=9s, 
   assert.equal(ai.state, 'patrol');
 });
 
-test('P. Diddy A* NEVER enters CELL_VENT ducts and CANNOT breach closed FNAF blast doors', () => {
+test('P. Diddy A* NEVER enters CELL_VENT ducts and CANNOT breach closed SecurityBunker hydraulic doors', () => {
   const layout = generateMansionLayout(101, 'hard');
 
-  // Seal BOTH lateral FNAF Security Office blast doors
-  const leftDoor = layout.doors.find((d) => d.id === 'door_fnaf_left')!;
-  const rightDoor = layout.doors.find((d) => d.id === 'door_fnaf_right')!;
+  // Seal BOTH lateral SecurityBunker (Cabine 09-A) blast doors
+  const leftDoor = layout.doors.find((d) => d.id === 'door_bunker_left')!;
+  const rightDoor = layout.doors.find((d) => d.id === 'door_bunker_right')!;
   leftDoor.isOpen = false;
   leftDoor.openProgress = 0;
   rightDoor.isOpen = false;
@@ -329,7 +329,7 @@ test('P. Diddy A* NEVER enters CELL_VENT ducts and CANNOT breach closed FNAF bla
     assert.equal(
       insideOffice,
       false,
-      `Closed FNAF blast doors MUST seal P. Diddy completely out of Security Office (breached at gx=${ngx}, gz=${ngz})`
+      `Closed SecurityBunker hydraulic doors MUST seal P. Diddy completely out of Security Office (breached at gx=${ngx}, gz=${ngz})`
     );
   }
 
