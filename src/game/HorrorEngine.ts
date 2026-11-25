@@ -36,6 +36,9 @@ import {
   saveSystem,
   type ProgressionStateV4,
 } from './saveSystem';
+import { GameServer } from './server/GameServer';
+import type { CompactDeltaPacket, GameWorldState } from './server/types';
+import { ClientInputPredictor } from '../network/MultiplayerClient';
 import {
   BASEMENT_CEILING_H,
   CELL_COURTYARD,
@@ -506,6 +509,11 @@ export class HorrorEngine {
   private lastMissionReport: MissionReportSnapshot | null = null;
   private backgroundPaused = false;
   private galleryReplayMode = false;
+  // Authoritative 10ms GameServer (Solo = local 1-player server @ 0ms; MP Host = broadcasts 33Hz deltas)
+  private authoritativeServer: GameServer | null = null;
+  private localPlayerId = 'local_player';
+  private inputPredictor = new ClientInputPredictor();
+  private lastSelfHealSnapshot: GameWorldState | null = null;
 
   // Run timers, status banner, keypad, cutscenes
   private elapsedSec = 0;
@@ -1362,11 +1370,35 @@ export class HorrorEngine {
     }
   }
 
-  startNewGame(difficulty: Difficulty, skipIntro = false): void {
+  startNewGame(
+    difficulty: Difficulty,
+    skipIntro = false,
+    customSeed?: number,
+    localPlayerId = 'local_player',
+    runLocalServer = true
+  ): void {
     this.audio.unlock();
     this.difficulty = difficulty;
-    const seed = Math.floor(Date.now() % 1000000) + 17;
-    this.layout = generateMansionLayout(seed, difficulty);
+    const seed = typeof customSeed === 'number' && Number.isFinite(customSeed)
+      ? Math.floor(customSeed)
+      : Math.floor(Date.now() % 1000000) + 17;
+    this.localPlayerId = localPlayerId;
+    const progInit = saveSystem.getProgression();
+    if (runLocalServer) {
+      this.authoritativeServer = new GameServer(seed, difficulty);
+      this.authoritativeServer.addPlayer({
+        id: localPlayerId,
+        nickname: 'Agente',
+        platform: this.inputController.getMode(),
+        activePerks: progInit.equippedPerks,
+      });
+      this.layout = this.authoritativeServer.layout;
+    } else {
+      this.authoritativeServer = null;
+      this.layout = generateMansionLayout(seed, difficulty);
+    }
+    this.inputPredictor.reset(this.layout.spawnPoint.x, this.layout.spawnPoint.z);
+    this.lastSelfHealSnapshot = this.authoritativeServer ? this.authoritativeServer.exportSnapshot() : null;
     this.buildWorldScene();
 
     const diffCfg = getDifficultyConfig(difficulty);
@@ -1504,6 +1536,55 @@ export class HorrorEngine {
     if (toast) {
       this.callbacks.onAchievementUnlocked?.(toast);
       this.callbacks.onProgressionUpdate?.(saveSystem.getProgression());
+    }
+  }
+
+  getAuthoritativeServer(): GameServer | null {
+    return this.authoritativeServer;
+  }
+
+  getLastWorldSnapshot(): GameWorldState | null {
+    return this.authoritativeServer ? this.authoritativeServer.exportSnapshot() : this.lastSelfHealSnapshot;
+  }
+
+  promoteToHostFromSnapshot(snapshot?: GameWorldState): GameServer | null {
+    const snap = snapshot ?? this.lastSelfHealSnapshot;
+    if (!snap) return null;
+    this.authoritativeServer = GameServer.fromSnapshot(snap);
+    this.applyReplicatedWorldSnapshot(snap);
+    return this.authoritativeServer;
+  }
+
+  applyCompactDelta(delta: CompactDeltaPacket): void {
+    if (delta.e?.doors) {
+      for (const [doorId, ds] of Object.entries(delta.e.doors)) {
+        this.applyRemoteDoorToggle(doorId, ds.isOpen, ds.isUnlocked);
+      }
+    }
+    if (delta.e?.generatorFixed && !this.generatorFixed) {
+      this.applyRemoteGeneratorFixed();
+    }
+    if (delta.e?.safeUnlocked && !this.layout.safe.unlocked) {
+      this.layout.safe.unlocked = true;
+    }
+    if (delta.e?.terminalUnlocked && !this.terminalUnlocked) {
+      this.terminalUnlocked = true;
+    }
+  }
+
+  applyReplicatedWorldSnapshot(snapshot: GameWorldState): void {
+    this.lastSelfHealSnapshot = snapshot;
+    for (const [doorId, ds] of Object.entries(snapshot.doors)) {
+      this.applyRemoteDoorToggle(doorId, ds.isOpen, ds.isUnlocked);
+    }
+    if (snapshot.generatorFixed && !this.generatorFixed) {
+      this.applyRemoteGeneratorFixed();
+    }
+    if (snapshot.safeUnlocked && !this.layout.safe.unlocked) {
+      this.layout.safe.unlocked = true;
+    }
+    if (snapshot.terminalUnlocked && !this.terminalUnlocked) {
+      this.terminalUnlocked = true;
     }
   }
 
@@ -5521,6 +5602,9 @@ export class HorrorEngine {
   private tickGameplay(dt: number): void {
     if (!this.hasActiveModal()) {
       this.elapsedSec += dt;
+      if (this.authoritativeServer) {
+        this.authoritativeServer.advance(dt, performance.now());
+      }
     }
     this.adrenalineBurstTimer = Math.max(0, this.adrenalineBurstTimer - dt);
     const diffCfg = getDifficultyConfig(this.difficulty);

@@ -321,16 +321,37 @@ export default function App() {
     });
   }, [settings.locale, settings.audio.master, settings.audio.voiceTapes, settings.audio.muted]);
 
-  // 20Hz Multiplayer Crossplay Sync Loop while in an active multiplayer match
+  // 30-35Hz Multiplayer Crossplay Sync Loop + Compact Delta / Self-Heal / Host Migration
   useEffect(() => {
     if (!activeMpRoom || hud.mode !== 'playing') {
       engineRef.current?.setMultiplayerPeers([], null, false);
       return;
     }
+    const eng = engineRef.current;
+    const srv = eng?.getAuthoritativeServer();
+    if (srv) {
+      srv.onBroadcastDelta = (delta) => multiplayerClient.broadcastCompactDelta(delta);
+      srv.onSelfHealSnapshot = (snap) => multiplayerClient.broadcastSelfHealSnapshot(snap);
+    }
+    const unsubDelta = multiplayerClient.on('compact_delta', (d) => {
+      engineRef.current?.applyCompactDelta(d as never);
+    });
+    const unsubHeal = multiplayerClient.on('self_heal_snapshot', (s) => {
+      engineRef.current?.applyReplicatedWorldSnapshot(s as never);
+    });
+    const unsubHost = multiplayerClient.on('host_migrated', (payload) => {
+      const p = payload as { snapshot?: unknown };
+      const promoted = engineRef.current?.promoteToHostFromSnapshot(p.snapshot as never);
+      if (promoted) {
+        promoted.onBroadcastDelta = (delta) => multiplayerClient.broadcastCompactDelta(delta);
+        promoted.onSelfHealSnapshot = (snap) => multiplayerClient.broadcastSelfHealSnapshot(snap);
+      }
+    });
+
     const timer = window.setInterval(() => {
-      const eng = engineRef.current;
-      if (!eng) return;
-      const local = eng.getLocalPlayerSyncState();
+      const curEng = engineRef.current;
+      if (!curEng) return;
+      const local = curEng.getLocalPlayerSyncState();
       multiplayerClient.sendPlayerState({
         x: local.x,
         y: local.y,
@@ -355,9 +376,19 @@ export default function App() {
         floor: (snap.y < -1.5 ? -1 : 0) as 0 | -1,
         alive: snap.alive,
       }));
-      eng.setMultiplayerPeers(peers, multiplayerClient.pingMs, false);
-    }, 50);
-    return () => window.clearInterval(timer);
+      curEng.setMultiplayerPeers(peers, multiplayerClient.pingMs, false);
+    }, 33);
+
+    return () => {
+      window.clearInterval(timer);
+      unsubDelta();
+      unsubHeal();
+      unsubHost();
+      if (srv) {
+        srv.onBroadcastDelta = null;
+        srv.onSelfHealSnapshot = null;
+      }
+    };
   }, [activeMpRoom, hud.mode]);
 
   // Pause heavy 3D background world loop while full-screen menus (Store / Account / MP Hub) are open
@@ -1048,12 +1079,20 @@ export default function App() {
             tryRequestMobileFullscreenLandscape();
             engineRef.current?.startNewGame(diff, false);
           }}
-          onStartMultiplayer={(roomCode, diff, _seed) => {
+          onStartMultiplayer={(roomCode, diff, seed) => {
             setSelectedDifficulty(diff);
             setActiveMpRoom(roomCode);
             setMultiplayerOpen(false);
             tryRequestMobileFullscreenLandscape();
-            engineRef.current?.startNewGame(diff, true);
+            const isHost =
+              multiplayerClient.currentRoom?.hostId === multiplayerClient.playerId;
+            engineRef.current?.startNewGame(
+              diff,
+              true,
+              seed,
+              multiplayerClient.playerId ?? 'mp_local',
+              isHost
+            );
           }}
           onClose={() => setMultiplayerOpen(false)}
         />

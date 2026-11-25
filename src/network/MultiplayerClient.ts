@@ -1,13 +1,14 @@
 import type { Difficulty } from '../game/types';
+import type { CompactDeltaPacket, GameWorldState } from '../game/server/types';
 import { OnlineRelayTransport, RELAY_PREFIX } from './OnlineRelayTransport';
 
 // ============================================================================
 // Constants & Types
 // ============================================================================
 
-export const INTERP_DELAY_MS = 60;
-export const SEND_RATE_HZ = 20;
-export const SEND_INTERVAL_MS = 1000 / SEND_RATE_HZ; // 50ms
+export const INTERP_DELAY_MS = 50;
+export const SEND_RATE_HZ = 30;
+export const SEND_INTERVAL_MS = Math.floor(1000 / SEND_RATE_HZ); // ~33ms (30-35Hz)
 
 const LOCAL_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
@@ -142,22 +143,94 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+export interface PendingMoveCommand {
+  seq: number;
+  dx: number;
+  dz: number;
+  yaw: number;
+}
+
+/**
+ * Client-Side Prediction + Server Reconciliation buffer (`inputSeq`).
+ * Applies local movement immediately at 60/120 FPS, then upon receiving server
+ * confirmation (`lastProcessedSeq`), discards acknowledged inputs and replays
+ * only pending unacknowledged commands.
+ */
+export class ClientInputPredictor {
+  private nextSeq = 1;
+  private pending: PendingMoveCommand[] = [];
+  public predictedX = 0;
+  public predictedZ = 0;
+
+  reset(x: number, z: number): void {
+    this.predictedX = x;
+    this.predictedZ = z;
+    this.pending = [];
+  }
+
+  recordAndPredict(dx: number, dz: number, yaw: number): PendingMoveCommand {
+    const cmd: PendingMoveCommand = { seq: this.nextSeq++, dx, dz, yaw };
+    this.pending.push(cmd);
+    if (this.pending.length > 120) this.pending.shift();
+    this.predictedX += dx;
+    this.predictedZ += dz;
+    return cmd;
+  }
+
+  reconcile(
+    serverX: number,
+    serverZ: number,
+    lastProcessedSeq: number,
+    applyStep?: (x: number, z: number, cmd: PendingMoveCommand) => { x: number; z: number }
+  ): { x: number; z: number; correctionDist: number; pendingCount: number } {
+    this.pending = this.pending.filter((c) => c.seq > lastProcessedSeq);
+    let rx = serverX;
+    let rz = serverZ;
+    for (const cmd of this.pending) {
+      if (applyStep) {
+        const next = applyStep(rx, rz, cmd);
+        rx = next.x;
+        rz = next.z;
+      } else {
+        rx += cmd.dx;
+        rz += cmd.dz;
+      }
+    }
+    const correctionDist = Math.hypot(rx - this.predictedX, rz - this.predictedZ);
+    this.predictedX = rx;
+    this.predictedZ = rz;
+    return { x: rx, z: rz, correctionDist, pendingCount: this.pending.length };
+  }
+
+  getPendingCount(): number {
+    return this.pending.length;
+  }
+}
+
 /**
  * Buffers timestamped server snapshots for a remote peer and linearly interpolates
- * between two real server coordinates (t0 <= renderTime <= t1) with ~60ms delay.
- * NEVER extrapolates past the latest real server coordinate (zero wall clipping).
+ * between two real server coordinates (t0 <= renderTime <= t1) with ~50ms delay.
+ * Strictly discards out-of-order packets (`packet.tick <= lastTick`) and NEVER
+ * extrapolates past the latest real server coordinate (zero wall clipping).
  */
 export class PeerInterpolationBuffer {
   public readonly delayMs: number;
   private readonly maxSnapshots: number;
   private snapshots: PeerTransformSnapshot[] = [];
+  private lastAcceptedTick = -1;
 
   constructor(delayMs: number = INTERP_DELAY_MS, maxSnapshots = 32) {
     this.delayMs = Math.max(0, delayMs);
     this.maxSnapshots = Math.max(2, maxSnapshots);
   }
 
-  push(snapshot: PeerTransformSnapshot): void {
+  push(snapshot: PeerTransformSnapshot & { tick?: number }): boolean {
+    if (typeof snapshot.tick === 'number') {
+      if (snapshot.tick <= this.lastAcceptedTick) {
+        return false; // Drop stale / out-of-order packet
+      }
+      this.lastAcceptedTick = snapshot.tick;
+    }
     const copy: PeerTransformSnapshot = { ...snapshot };
     const len = this.snapshots.length;
     if (len === 0 || copy.timestamp > this.snapshots[len - 1].timestamp) {
@@ -165,20 +238,13 @@ export class PeerInterpolationBuffer {
     } else if (copy.timestamp === this.snapshots[len - 1].timestamp) {
       this.snapshots[len - 1] = copy;
     } else {
-      // Insert in ascending timestamp order
-      let idx = this.snapshots.findIndex((s) => s.timestamp >= copy.timestamp);
-      if (idx === -1) {
-        this.snapshots.push(copy);
-      } else if (this.snapshots[idx].timestamp === copy.timestamp) {
-        this.snapshots[idx] = copy;
-      } else {
-        this.snapshots.splice(idx, 0, copy);
-      }
+      return false; // Drop out-of-order timestamp
     }
 
     if (this.snapshots.length > this.maxSnapshots) {
       this.snapshots.splice(0, this.snapshots.length - this.maxSnapshots);
     }
+    return true;
   }
 
   sample(nowMs: number): PeerTransformSnapshot | null {
@@ -257,6 +323,9 @@ export type MultiplayerEventType =
   | 'ping_synced'
   | 'player_captured'
   | 'player_rescued'
+  | 'compact_delta'
+  | 'self_heal_snapshot'
+  | 'host_migrated'
   | 'connection_change'
   | 'ping_update'
   | 'error';
@@ -682,6 +751,65 @@ export class MultiplayerClient {
         spectating: Boolean(msg.spectating),
         alive: msg.alive !== false,
       });
+      return;
+    }
+
+    if (type === 'compact_delta' && msg.delta) {
+      const delta = msg.delta as CompactDeltaPacket;
+      for (const entry of delta.p) {
+        const [id, _seq, x, y, z, yaw, _floor, flags] = entry;
+        if (!id || id === this.playerId) continue;
+        let buf = this.peerBuffers.get(id);
+        if (!buf) {
+          buf = new PeerInterpolationBuffer(INTERP_DELAY_MS);
+          this.peerBuffers.set(id, buf);
+        }
+        buf.push({
+          tick: delta.t,
+          timestamp: delta.s || now,
+          x,
+          y,
+          z,
+          yaw,
+          pitch: 0,
+          alive: Boolean(flags & 1),
+          crouching: Boolean(flags & 2),
+          flashlightOn: Boolean(flags & 4),
+          uvOn: Boolean(flags & 8),
+          captured: Boolean(flags & 16),
+          spectating: Boolean(flags & 32),
+          heldItem: null,
+        });
+      }
+      this.emit('compact_delta', delta);
+      return;
+    }
+
+    if (type === 'self_heal_snapshot' && msg.snapshot) {
+      this.emit('self_heal_snapshot', msg.snapshot as GameWorldState);
+      return;
+    }
+
+    if (type === 'host_leaving' && this.currentRoom) {
+      const remaining = this.currentRoom.players.filter((p) => p.id !== senderId);
+      if (remaining.length > 0) {
+        const nextHost = remaining[0];
+        this.currentRoom = {
+          ...this.currentRoom,
+          hostId: nextHost.id,
+          hostName: nextHost.nickname,
+          players: remaining.map((p) => ({ ...p, isHost: p.id === nextHost.id })),
+        };
+        if (nextHost.id === this.playerId) {
+          this.isRelayHost = true;
+          this.emit('host_migrated', {
+            newHostId: nextHost.id,
+            room: this.currentRoom,
+            snapshot: msg.snapshot as GameWorldState | undefined,
+          });
+        }
+        this.emit('room_update', this.currentRoom);
+      }
       return;
     }
 
@@ -1267,6 +1395,26 @@ export class MultiplayerClient {
     if (this.mode !== 'online') return;
     if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'capture_player', targetPlayerId });
     else this.sendRaw({ type: 'capture_player', targetPlayerId });
+  }
+
+  broadcastCompactDelta(delta: CompactDeltaPacket): void {
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') {
+      this.broadcastRelayRoom({ type: 'compact_delta', delta });
+    }
+  }
+
+  broadcastSelfHealSnapshot(snapshot: GameWorldState): void {
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') {
+      this.broadcastRelayRoom({ type: 'self_heal_snapshot', snapshot });
+    }
+  }
+
+  notifyHostMigrationLeave(snapshot: GameWorldState): void {
+    if (this.transport === 'relay' && this.isRelayHost) {
+      this.broadcastRelayRoom({ type: 'host_leaving', snapshot });
+    }
   }
 
   rescuePlayer(targetPlayerId: string): void {

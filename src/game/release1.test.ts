@@ -178,8 +178,8 @@ test('Release 1.0: Multiplayer Room Creation (5-char code), Join, Ready & 60ms I
     rm.joinRoom('ZZZZZ', { id: 'p3', nickname: 'X', platform: 'pc', perks: [] });
   });
 
-  // 60ms interpolation buffer interpolates smoothly between real server snapshots and NEVER extrapolates
-  assert.equal(INTERP_DELAY_MS, 60);
+  // 50ms interpolation buffer interpolates smoothly between real server snapshots and NEVER extrapolates
+  assert.equal(INTERP_DELAY_MS, 50);
   const buf = new PeerInterpolationBuffer();
   buf.push({
     timestamp: 1000,
@@ -212,8 +212,8 @@ test('Release 1.0: Multiplayer Room Creation (5-char code), Join, Ready & 60ms I
     alive: true,
   });
 
-  // At renderNow = 1110ms -> delayed sample time = 1050ms -> exact midpoint (15, 25)
-  const mid = buf.sample(1110);
+  // At renderNow = 1100ms -> delayed sample time = 1050ms -> exact midpoint (15, 25)
+  const mid = buf.sample(1100);
   assert.ok(mid);
   assert.ok(Math.abs(mid!.x - 15) < 0.01);
   assert.ok(Math.abs(mid!.z - 25) < 0.01);

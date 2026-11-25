@@ -7,6 +7,7 @@
 const RELAY_ENDPOINTS = [
   'wss://broker.emqx.io:8084/mqtt',
   'wss://broker.hivemq.com:8884/mqtt',
+  'wss://test.mosquitto.org:8081',
 ] as const;
 
 export const RELAY_PREFIX = 'drizzycraft/s09/v1';
