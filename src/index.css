@@ -1,0 +1,371 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Oswald', 'Arial Narrow', Impact, sans-serif;
+    --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace;
+    --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
+    --s09-panel: rgba(11, 13, 19, 0.90);
+    --s09-panel-strong: rgba(8, 10, 15, 0.96);
+    --s09-border: rgba(148, 163, 184, 0.24);
+    --s09-amber: #f59e0b;
+    --s09-crimson: #dc2626;
+    --s09-uv: #c084fc;
+    --s09-cyan: #22d3ee;
+  }
+
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html,
+  body,
+  #root {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background-color: #06080d;
+    color: #e6e7ec;
+    font-family: var(--font-ui);
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+
+  canvas {
+    display: block;
+    touch-action: none;
+  }
+}
+
+@layer components {
+  .font-horror {
+    font-family: var(--font-display);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .font-tech {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ==========================================================================
+     TACTICAL VHS / INDUSTRIAL DESIGN SYSTEM — SETOR 09
+     ========================================================================== */
+
+  /* Chamfered tactical panel (used on modals, title cards, inspector & dossiers) */
+  .horror-panel {
+    background: linear-gradient(168deg, rgba(16, 19, 27, 0.93) 0%, rgba(8, 10, 16, 0.96) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.55),
+      0 20px 56px rgba(0, 0, 0, 0.78);
+    clip-path: polygon(
+      0 10px,
+      10px 0,
+      calc(100% - 10px) 0,
+      100% 10px,
+      100% calc(100% - 10px),
+      calc(100% - 10px) 100%,
+      10px 100%,
+      0 calc(100% - 10px)
+    );
+  }
+
+  /* Lighter chamfered panel for live in-game HUD overlays (keeps 60 FPS on mobile WebGL) */
+  .hud-tactical-panel {
+    background: linear-gradient(170deg, rgba(11, 14, 21, 0.86) 0%, rgba(7, 9, 14, 0.92) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      0 8px 24px rgba(0, 0, 0, 0.58);
+    clip-path: polygon(
+      0 7px,
+      7px 0,
+      calc(100% - 7px) 0,
+      100% 7px,
+      100% calc(100% - 7px),
+      calc(100% - 7px) 100%,
+      7px 100%,
+      0 calc(100% - 7px)
+    );
+  }
+
+  /* Subtle VHS scanlines & micro industrial grid overlay */
+  .tactical-scanlines {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.028) 0px,
+      rgba(255, 255, 255, 0.028) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  }
+
+  .tactical-grid-bg {
+    background-image:
+      linear-gradient(rgba(148, 163, 184, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+
+  .horror-divider {
+    border-color: rgba(148, 163, 184, 0.16);
+  }
+
+  /* Tactical Buttons with crisp hover/focus glow states */
+  .horror-btn {
+    background: linear-gradient(180deg, rgba(30, 35, 48, 0.94) 0%, rgba(16, 19, 28, 0.98) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.26);
+    color: #e2e8f0;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      0 4px 12px rgba(0, 0, 0, 0.35);
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      color 140ms ease,
+      box-shadow 140ms ease,
+      transform 100ms ease;
+    clip-path: polygon(
+      0 5px,
+      5px 0,
+      calc(100% - 5px) 0,
+      100% 5px,
+      100% calc(100% - 5px),
+      calc(100% - 5px) 100%,
+      5px 100%,
+      0 calc(100% - 5px)
+    );
+  }
+
+  .horror-btn:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(44, 52, 70, 0.98) 0%, rgba(24, 29, 41, 0.98) 100%);
+    border-color: rgba(245, 158, 11, 0.65);
+    color: #fffbeb;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      0 0 16px rgba(245, 158, 11, 0.22);
+  }
+
+  .horror-btn:active:not(:disabled) {
+    transform: scale(0.98);
+  }
+
+  .horror-btn:disabled {
+    opacity: 0.42;
+    cursor: not-allowed;
+  }
+
+  .horror-btn-primary {
+    background: linear-gradient(180deg, rgba(185, 28, 28, 0.96) 0%, rgba(127, 29, 29, 0.98) 100%);
+    border: 1px solid rgba(248, 113, 113, 0.65);
+    color: #fff5f5;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.22),
+      0 0 24px rgba(220, 38, 38, 0.35),
+      0 8px 20px rgba(0, 0, 0, 0.55);
+  }
+
+  .horror-btn-primary:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(220, 38, 38, 0.98) 0%, rgba(153, 27, 27, 1) 100%);
+    border-color: #fca5a5;
+    color: #ffffff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      0 0 28px rgba(239, 68, 68, 0.52);
+  }
+
+  .horror-btn-amber {
+    background: linear-gradient(180deg, rgba(217, 119, 6, 0.94) 0%, rgba(146, 64, 14, 0.98) 100%);
+    border: 1px solid rgba(252, 211, 77, 0.62);
+    color: #fffbeb;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.24),
+      0 0 18px rgba(245, 158, 11, 0.28);
+  }
+
+  .horror-btn-amber:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(245, 158, 11, 0.98) 0%, rgba(180, 83, 9, 1) 100%);
+    border-color: #fde68a;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.32),
+      0 0 24px rgba(245, 158, 11, 0.48);
+  }
+
+  .horror-btn-uv {
+    background: linear-gradient(180deg, rgba(126, 34, 206, 0.92) 0%, rgba(88, 28, 135, 0.98) 100%);
+    border: 1px solid rgba(216, 180, 254, 0.6);
+    color: #faf5ff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.2),
+      0 0 18px rgba(192, 132, 252, 0.32);
+  }
+
+  .horror-btn-uv:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(147, 51, 234, 0.98) 0%, rgba(107, 33, 168, 1) 100%);
+    border-color: #e9d5ff;
+    box-shadow: 0 0 24px rgba(192, 132, 252, 0.52);
+  }
+
+  .horror-btn-danger {
+    background: linear-gradient(180deg, rgba(127, 29, 29, 0.85) 0%, rgba(69, 10, 10, 0.94) 100%);
+    border: 1px solid rgba(239, 68, 68, 0.45);
+    color: #fecaca;
+  }
+
+  .horror-btn-danger:hover:not(:disabled) {
+    background: linear-gradient(180deg, rgba(185, 28, 28, 0.95) 0%, rgba(127, 29, 29, 0.98) 100%);
+    border-color: #f87171;
+    color: #ffffff;
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.36);
+  }
+
+  /* Hotbar & Inventory Tactical Slots */
+  .horror-slot {
+    background: linear-gradient(180deg, rgba(15, 18, 27, 0.9) 0%, rgba(8, 10, 16, 0.95) 100%);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+    transition: border-color 140ms ease, box-shadow 140ms ease, transform 100ms ease;
+    clip-path: polygon(
+      0 5px,
+      5px 0,
+      calc(100% - 5px) 0,
+      100% 5px,
+      100% calc(100% - 5px),
+      calc(100% - 5px) 100%,
+      5px 100%,
+      0 calc(100% - 5px)
+    );
+  }
+
+  .horror-slot:hover {
+    border-color: rgba(245, 158, 11, 0.55);
+  }
+
+  .horror-slot-active {
+    background: linear-gradient(180deg, rgba(66, 36, 10, 0.92) 0%, rgba(28, 16, 6, 0.96) 100%);
+    border: 1px solid rgba(251, 191, 36, 0.95);
+    box-shadow:
+      inset 0 0 14px rgba(245, 158, 11, 0.22),
+      0 0 18px rgba(245, 158, 11, 0.34);
+  }
+
+  .horror-slot-uv {
+    background: linear-gradient(180deg, rgba(59, 17, 94, 0.92) 0%, rgba(26, 9, 44, 0.96) 100%);
+    border: 1px solid rgba(216, 180, 254, 0.95);
+    box-shadow:
+      inset 0 0 14px rgba(192, 132, 252, 0.25),
+      0 0 18px rgba(192, 132, 252, 0.38);
+  }
+
+  /* Scrollbar styling inside modals & dossiers */
+  .horror-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .horror-scroll::-webkit-scrollbar-track {
+    background: rgba(15, 18, 26, 0.65);
+  }
+
+  .horror-scroll::-webkit-scrollbar-thumb {
+    background: rgba(245, 158, 11, 0.36);
+    border-radius: 2px;
+  }
+
+  .horror-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(245, 158, 11, 0.62);
+  }
+
+  /* Custom Tactical Range Sliders (Settings) */
+  input[type='range'].tactical-range {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    background: rgba(30, 41, 59, 0.9);
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    border-radius: 2px;
+    outline: none;
+  }
+
+  input[type='range'].tactical-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 16px;
+    background: #f59e0b;
+    border: 1px solid #fef3c7;
+    box-shadow: 0 0 10px rgba(245, 158, 11, 0.45);
+    cursor: pointer;
+  }
+
+  input[type='range'].tactical-range::-moz-range-thumb {
+    width: 14px;
+    height: 16px;
+    background: #f59e0b;
+    border: 1px solid #fef3c7;
+    border-radius: 0;
+    cursor: pointer;
+  }
+}
+
+/* Native Console / Gamepad Focus Highlight (PS4/Xbox UI Navigation) */
+button:focus-visible,
+[role="button"]:focus-visible,
+input:focus-visible,
+select:focus-visible,
+.gamepad-focused {
+  outline: 2px solid #f59e0b !important;
+  outline-offset: 2px !important;
+  box-shadow:
+    0 0 0 3px rgba(245, 158, 11, 0.25),
+    0 0 22px rgba(245, 158, 11, 0.45) !important;
+}
+
+/* Animations */
+@keyframes pulse-danger {
+  0%, 100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 0.92;
+  }
+}
+
+@keyframes reel-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes tactical-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-danger-pulse {
+  animation: pulse-danger 0.85s ease-in-out infinite;
+}
+
+.animate-reel-spin {
+  animation: reel-spin 3.2s linear infinite;
+}
+
+.animate-tactical-in {
+  animation: tactical-fade-in 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}

@@ -1,0 +1,6 @@
+{
+  "name": "DiddyCraft: Terror Voxel",
+  "description": "Jogo de sobrevivência e terror estilo Minecraft 3D onde você precisa coletar 6 chaves, construir barricadas e fugir do P. Diddy sombrio no PC e celular.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
