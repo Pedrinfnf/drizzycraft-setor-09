@@ -23,10 +23,11 @@ export interface CloudConfig {
 }
 
 export const CLOUD_CONFIG: CloudConfig = {
-  provider: 'none',
+  provider: 'supabase',
   authorizedDomain: 'pedrinfnf.github.io',
-  supabaseUrl: '',
-  supabaseAnonKey: '',
+  supabaseUrl: 'https://wuuamtchrdhauitvnguc.supabase.co',
+  supabaseAnonKey:
+    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind1dWFtdGNocmRoYXVpdHZuZ3VjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU2Mzk3MzcsImV4cCI6MjExMTIxNTczN30.rkoPKxR4k780Qcb6aO_SzEQ0DeaBumwY67tAAo5EQ-o',
   firebaseApiKey: '',
   firebaseAuthDomain: '',
   firebaseProjectId: '',

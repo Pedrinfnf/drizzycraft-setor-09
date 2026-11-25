@@ -1,3 +1,7 @@
+import { CLOUD_CONFIG, isCloudConfigured } from '../config/cloudConfig';
+import { cloudSync } from './cloudSync';
+import type { SaveDataV4 } from './saveSystem';
+
 export type AuthProvider = 'email' | 'google' | 'guest';
 
 export interface AuthUser {
@@ -194,6 +198,82 @@ async function tryApiFetch<T>(
   }
 }
 
+function isSupabaseAuthActive(): boolean {
+  return CLOUD_CONFIG.provider === 'supabase' && isCloudConfigured(CLOUD_CONFIG);
+}
+
+function supabaseBaseUrl(): string {
+  return CLOUD_CONFIG.supabaseUrl.replace(/\/+$/, '');
+}
+
+interface SupabaseAuthUserPayload {
+  id?: string;
+  email?: string;
+  app_metadata?: { provider?: string };
+  user_metadata?: { nickname?: string; full_name?: string; name?: string; avatar_url?: string };
+}
+
+function mapSupabaseUser(u: SupabaseAuthUserPayload, fallbackNick?: string): AuthUser {
+  const email = (u.email || '').trim().toLowerCase();
+  const nick =
+    (u.user_metadata?.nickname ||
+      u.user_metadata?.full_name ||
+      u.user_metadata?.name ||
+      fallbackNick ||
+      email.split('@')[0] ||
+      'Survivor').trim();
+  const providerRaw = u.app_metadata?.provider;
+  const provider: AuthProvider = providerRaw === 'google' ? 'google' : 'email';
+  return {
+    id: u.id || `sb_${randomHex(8)}`,
+    nickname: nick.slice(0, 24),
+    email,
+    provider,
+    avatarUrl: u.user_metadata?.avatar_url,
+  };
+}
+
+async function supabaseAuthFetch<T>(
+  path: string,
+  init: RequestInit,
+  accessToken?: string,
+  timeoutMs = 7000,
+): Promise<{ reachable: boolean; ok: boolean; status: number; data: T | null }> {
+  if (typeof fetch !== 'function') {
+    return { reachable: false, ok: false, status: 0, data: null };
+  }
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const headers: Record<string, string> = {
+      apikey: CLOUD_CONFIG.supabaseAnonKey,
+      ...(init.headers as Record<string, string> | undefined),
+    };
+    if (accessToken) {
+      headers.Authorization = `Bearer ${accessToken}`;
+    }
+    const resp = await fetch(`${supabaseBaseUrl()}${path}`, {
+      ...init,
+      headers,
+      signal: controller?.signal,
+    });
+    const text = await resp.text();
+    let data: T | null = null;
+    if (text) {
+      try {
+        data = JSON.parse(text) as T;
+      } catch {
+        data = null;
+      }
+    }
+    return { reachable: true, ok: resp.ok, status: resp.status, data };
+  } catch {
+    return { reachable: false, ok: false, status: 0, data: null };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export const authClient = {
   isValidEmail,
 
@@ -205,6 +285,35 @@ export const authClient = {
     const current = readStoredSession();
     if (!current) return null;
     if (current.mode === 'local') return current;
+
+    if (isSupabaseAuthActive()) {
+      const sb = await supabaseAuthFetch<SupabaseAuthUserPayload>(
+        '/auth/v1/user',
+        { method: 'GET' },
+        current.token,
+      );
+      if (!sb.reachable) return current;
+      if (sb.status === 401 || sb.status === 403) {
+        persistSession(null);
+        cloudSync.setCredentials(null);
+        return null;
+      }
+      if (sb.ok && sb.data?.id) {
+        const user = mapSupabaseUser(sb.data, current.user.nickname);
+        cloudSync.setCredentials({ uid: user.id, accessToken: current.token });
+        const fetched = (await cloudSync.fetchSave()) as unknown as Record<string, unknown> | null;
+        const refreshed: AuthSession = {
+          token: current.token,
+          user,
+          cloudSave: fetched ?? current.cloudSave ?? null,
+          mode: 'remote',
+          updatedAt: Date.now(),
+        };
+        persistSession(refreshed);
+        return refreshed;
+      }
+      return current;
+    }
 
     const resp = await tryApiFetch<{
       ok: boolean;
@@ -237,6 +346,36 @@ export const authClient = {
   async consumeOAuthCallbackFromUrl(): Promise<AuthSession | null> {
     if (typeof window === 'undefined') return null;
     const hash = window.location.hash || '';
+    const sbMatch = hash.match(/access_token=([^&]+)/);
+    if (sbMatch && isSupabaseAuthActive()) {
+      const accessToken = decodeURIComponent(sbMatch[1]);
+      try {
+        window.history.replaceState(null, '', window.location.pathname + window.location.search);
+      } catch {
+        // ignore
+      }
+      const sb = await supabaseAuthFetch<SupabaseAuthUserPayload>(
+        '/auth/v1/user',
+        { method: 'GET' },
+        accessToken,
+      );
+      if (sb.reachable && sb.ok && sb.data?.id) {
+        const user = mapSupabaseUser(sb.data);
+        cloudSync.setCredentials({ uid: user.id, accessToken });
+        const cloudSave = (await cloudSync.fetchSave()) as unknown as Record<string, unknown> | null;
+        const session: AuthSession = {
+          token: accessToken,
+          user,
+          cloudSave,
+          mode: 'remote',
+          updatedAt: Date.now(),
+        };
+        persistSession(session);
+        return session;
+      }
+      return null;
+    }
+
     const match = hash.match(/auth_token=([^&]+)/);
     if (!match) return null;
     const token = decodeURIComponent(match[1]);
@@ -280,6 +419,52 @@ export const authClient = {
     }
     if (!password || password.length < 6) {
       return { ok: false, error: 'Senha deve ter pelo menos 6 caracteres.' };
+    }
+
+    if (isSupabaseAuthActive()) {
+      const sb = await supabaseAuthFetch<{
+        access_token?: string;
+        user?: SupabaseAuthUserPayload;
+        msg?: string;
+        error_description?: string;
+      }>('/auth/v1/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanEmail,
+          password,
+          data: { nickname: cleanNick },
+        }),
+      });
+      if (sb.reachable) {
+        if (!sb.ok || !sb.data?.access_token || !sb.data.user?.id) {
+          return {
+            ok: false,
+            error: sb.data?.msg || sb.data?.error_description || 'Erro ao criar conta na nuvem.',
+          };
+        }
+        const user = mapSupabaseUser(sb.data.user, cleanNick);
+        const token = sb.data.access_token;
+        cloudSync.setCredentials({ uid: user.id, accessToken: token });
+        let uploadedSave: Record<string, unknown> | null = null;
+        if (guestSave) {
+          const ok = await cloudSync.uploadSave(guestSave as unknown as SaveDataV4);
+          if (ok) uploadedSave = { ...guestSave };
+        }
+        const session: AuthSession = {
+          token,
+          user,
+          cloudSave: uploadedSave,
+          mode: 'remote',
+          updatedAt: Date.now(),
+        };
+        persistSession(session);
+        return {
+          ok: true,
+          session,
+          migratedGuestSave: Boolean(guestSave && uploadedSave),
+        };
+      }
     }
 
     const remote = await tryApiFetch<{
@@ -361,6 +546,48 @@ export const authClient = {
       return { ok: false, error: 'Informe um email válido e sua senha.' };
     }
 
+    if (isSupabaseAuthActive()) {
+      const sb = await supabaseAuthFetch<{
+        access_token?: string;
+        user?: SupabaseAuthUserPayload;
+        msg?: string;
+        error_description?: string;
+      }>('/auth/v1/token?grant_type=password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password }),
+      });
+      if (sb.reachable) {
+        if (!sb.ok || !sb.data?.access_token || !sb.data.user?.id) {
+          return {
+            ok: false,
+            error: sb.data?.error_description || sb.data?.msg || 'Email ou senha incorretos.',
+          };
+        }
+        const user = mapSupabaseUser(sb.data.user);
+        const token = sb.data.access_token;
+        cloudSync.setCredentials({ uid: user.id, accessToken: token });
+        let cloudSave = (await cloudSync.fetchSave()) as unknown as Record<string, unknown> | null;
+        let migratedGuestSave = false;
+        if (!cloudSave && guestSave) {
+          const ok = await cloudSync.uploadSave(guestSave as unknown as SaveDataV4);
+          if (ok) {
+            cloudSave = { ...guestSave };
+            migratedGuestSave = true;
+          }
+        }
+        const session: AuthSession = {
+          token,
+          user,
+          cloudSave,
+          mode: 'remote',
+          updatedAt: Date.now(),
+        };
+        persistSession(session);
+        return { ok: true, session, migratedGuestSave };
+      }
+    }
+
     const remote = await tryApiFetch<{
       ok: boolean;
       token?: string;
@@ -429,6 +656,20 @@ export const authClient = {
   },
 
   async loginWithGoogle(): Promise<AuthResult> {
+    if (isSupabaseAuthActive()) {
+      const redirectTo =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}${window.location.pathname}`
+          : 'https://pedrinfnf.github.io/drizzycraft-setor-09/';
+      const authUrl = `${supabaseBaseUrl()}/auth/v1/authorize?provider=google&redirect_to=${encodeURIComponent(
+        redirectTo,
+      )}`;
+      if (typeof window !== 'undefined') {
+        window.location.href = authUrl;
+      }
+      return { ok: true, configured: true };
+    }
+
     const remote = await tryApiFetch<{
       ok: boolean;
       configured?: boolean;
@@ -467,7 +708,12 @@ export const authClient = {
   async logout(): Promise<void> {
     const current = readStoredSession();
     persistSession(null);
+    cloudSync.setCredentials(null);
     if (current && current.mode === 'remote') {
+      if (isSupabaseAuthActive()) {
+        await supabaseAuthFetch('/auth/v1/logout', { method: 'POST' }, current.token);
+        return;
+      }
       await tryApiFetch('/api/auth/logout', {
         method: 'POST',
         headers: { Authorization: `Bearer ${current.token}` },
@@ -487,6 +733,16 @@ export const authClient = {
     }
 
     if (current.mode === 'remote') {
+      if (isSupabaseAuthActive()) {
+        cloudSync.setCredentials({ uid: current.user.id, accessToken: current.token });
+        const ok = await cloudSync.uploadSave(saveData as unknown as SaveDataV4);
+        if (ok) {
+          const updatedAt = Date.now();
+          persistSession({ ...current, cloudSave: { ...saveData }, updatedAt });
+          return { ok: true, mode: 'remote', updatedAt };
+        }
+      }
+
       const remote = await tryApiFetch<{
         ok: boolean;
         updatedAt?: number;
@@ -539,6 +795,15 @@ export const authClient = {
     const current = readStoredSession();
     if (!current) return null;
     if (current.mode === 'remote') {
+      if (isSupabaseAuthActive()) {
+        cloudSync.setCredentials({ uid: current.user.id, accessToken: current.token });
+        const fetched = (await cloudSync.fetchSave()) as unknown as Record<string, unknown> | null;
+        if (fetched) {
+          persistSession({ ...current, cloudSave: fetched, updatedAt: Date.now() });
+          return fetched;
+        }
+      }
+
       const remote = await tryApiFetch<{
         ok: boolean;
         cloudSave?: Record<string, unknown> | null;

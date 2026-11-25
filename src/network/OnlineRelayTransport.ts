@@ -1,8 +1,12 @@
 /**
- * Zero-dependency Global Online WSS Relay Transport (MQTT 3.1.1 over TLS WebSocket).
+ * Zero-dependency Global Online WSS Relay Transport.
+ * Primary: Supabase Realtime Broadcast (Phoenix WebSocket v1.0.0 over TLS).
+ * Automatic Fallback: MQTT 3.1.1 over TLS WebSocket (EMQX / HiveMQ / Mosquitto).
  * Works directly from static HTTPS hosting (GitHub Pages) across ANY two devices
  * on different networks (4G/5G mobile, Wi-Fi, PC, Android, iOS) with zero NAT/TURN issues.
  */
+
+import { CLOUD_CONFIG, isCloudConfigured } from '../config/cloudConfig';
 
 const RELAY_ENDPOINTS = [
   'wss://broker.emqx.io:8084/mqtt',
@@ -11,6 +15,13 @@ const RELAY_ENDPOINTS = [
 ] as const;
 
 export const RELAY_PREFIX = 'drizzycraft/s09/v1';
+
+function mapTopicToSupabaseChannel(topic: string): string {
+  if (topic.includes('/public/')) return 'realtime:drizzy_s09_public';
+  const roomMatch = topic.match(/\/room\/([A-Z0-9]+)/i);
+  if (roomMatch) return `realtime:drizzy_s09_room_${roomMatch[1].toUpperCase()}`;
+  return `realtime:${topic.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+}
 
 const te = new TextEncoder();
 const td = new TextDecoder();
@@ -181,10 +192,17 @@ export class OnlineRelayTransport {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private lastPingSentAt = 0;
   private connected = false;
+  private backend: 'none' | 'supabase' | 'mqtt' = 'none';
+  private phxRef = 1;
+  private joinedChannels = new Set<string>();
 
   public pingMs: number | null = null;
   public onPingUpdate: ((ms: number) => void) | null = null;
   public onDisconnect: (() => void) | null = null;
+
+  getBackend(): 'none' | 'supabase' | 'mqtt' {
+    return this.backend;
+  }
 
   isConnected(): boolean {
     return this.connected && this.ws !== null && this.ws.readyState === WebSocket.OPEN;
@@ -199,11 +217,127 @@ export class OnlineRelayTransport {
     if (this.isConnected()) return true;
     if (typeof WebSocket === 'undefined') return false;
 
+    if (CLOUD_CONFIG.provider === 'supabase' && isCloudConfigured(CLOUD_CONFIG)) {
+      const sbOk = await this.tryConnectSupabaseRealtime(timeoutPerEndpointMs);
+      if (sbOk) return true;
+    }
+
     for (const url of RELAY_ENDPOINTS) {
       const ok = await this.tryConnectEndpoint(url, timeoutPerEndpointMs);
       if (ok) return true;
     }
     return false;
+  }
+
+  private tryConnectSupabaseRealtime(timeoutMs: number): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const fail = () => {
+        if (settled) return;
+        settled = true;
+        this.cleanup();
+        resolve(false);
+      };
+
+      const timer = setTimeout(fail, timeoutMs);
+      try {
+        const wsBase = CLOUD_CONFIG.supabaseUrl
+          .trim()
+          .replace(/^http/i, 'ws')
+          .replace(/\/+$/, '');
+        const url = `${wsBase}/realtime/v1/websocket?apikey=${encodeURIComponent(
+          CLOUD_CONFIG.supabaseAnonKey.trim()
+        )}&vsn=1.0.0`;
+
+        const ws = new WebSocket(url);
+        this.ws = ws;
+        this.backend = 'supabase';
+        this.joinedChannels.clear();
+
+        ws.onopen = () => {
+          this.lastPingSentAt = Date.now();
+          ws.send(
+            JSON.stringify({
+              topic: 'phoenix',
+              event: 'heartbeat',
+              payload: {},
+              ref: String(this.phxRef++),
+            })
+          );
+        };
+
+        ws.onmessage = (ev) => {
+          if (typeof ev.data !== 'string') return;
+          let msg: {
+            topic?: string;
+            event?: string;
+            payload?: {
+              status?: string;
+              event?: string;
+              payload?: { topic?: string; data?: string };
+            };
+          };
+          try {
+            msg = JSON.parse(ev.data);
+          } catch {
+            return;
+          }
+
+          if (msg.topic === 'phoenix' && msg.event === 'phx_reply') {
+            const rtt = Math.max(1, Date.now() - this.lastPingSentAt);
+            this.pingMs = rtt;
+            this.onPingUpdate?.(rtt);
+            if (!settled) {
+              settled = true;
+              clearTimeout(timer);
+              this.connected = true;
+              this.backend = 'supabase';
+              for (const topic of this.subscriptions) {
+                this.sendSubscribe(topic);
+              }
+              this.startPingLoop();
+              resolve(true);
+            }
+          } else if (
+            msg.event === 'broadcast' &&
+            msg.payload?.event === 'relay' &&
+            typeof msg.payload.payload?.topic === 'string' &&
+            typeof msg.payload.payload?.data === 'string'
+          ) {
+            const rTopic = msg.payload.payload.topic;
+            const rData = msg.payload.payload.data;
+            for (const h of this.messageHandlers) {
+              try {
+                h(rTopic, rData);
+              } catch {
+                // isolate handler errors
+              }
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          clearTimeout(timer);
+          fail();
+        };
+
+        ws.onclose = () => {
+          clearTimeout(timer);
+          if (!settled) {
+            fail();
+            return;
+          }
+          const wasConnected = this.connected;
+          this.cleanup();
+          if (wasConnected) {
+            this.onDisconnect?.();
+          }
+        };
+      } catch {
+        clearTimeout(timer);
+        fail();
+      }
+    });
   }
 
   private tryConnectEndpoint(url: string, timeoutMs: number): Promise<boolean> {
@@ -248,6 +382,7 @@ export class OnlineRelayTransport {
               settled = true;
               clearTimeout(timer);
               this.connected = true;
+              this.backend = 'mqtt';
               const rtt = Math.max(1, Date.now() - this.lastPingSentAt);
               this.pingMs = rtt;
               this.onPingUpdate?.(rtt);
@@ -310,6 +445,25 @@ export class OnlineRelayTransport {
   unsubscribe(topicFilter: string): void {
     this.subscriptions.delete(topicFilter);
     if (this.isConnected() && this.ws) {
+      if (this.backend === 'supabase') {
+        const ch = mapTopicToSupabaseChannel(topicFilter);
+        if (this.joinedChannels.has(ch)) {
+          this.joinedChannels.delete(ch);
+          try {
+            this.ws.send(
+              JSON.stringify({
+                topic: ch,
+                event: 'phx_leave',
+                payload: {},
+                ref: String(this.phxRef++),
+              })
+            );
+          } catch {
+            // ignore
+          }
+        }
+        return;
+      }
       const id = this.nextPacketId++ & 0xffff || 1;
       try {
         this.ws.send(buildMqttUnsubscribePacket(id, topicFilter));
@@ -323,6 +477,33 @@ export class OnlineRelayTransport {
     if (!this.isConnected() || !this.ws) return false;
     try {
       const str = typeof payloadObj === 'string' ? payloadObj : JSON.stringify(payloadObj);
+      if (this.backend === 'supabase') {
+        const ch = mapTopicToSupabaseChannel(topic);
+        if (!this.joinedChannels.has(ch)) {
+          this.joinedChannels.add(ch);
+          this.ws.send(
+            JSON.stringify({
+              topic: ch,
+              event: 'phx_join',
+              payload: { config: { broadcast: { self: false, ack: false } } },
+              ref: String(this.phxRef++),
+            })
+          );
+        }
+        this.ws.send(
+          JSON.stringify({
+            topic: ch,
+            event: 'broadcast',
+            payload: {
+              type: 'broadcast',
+              event: 'relay',
+              payload: { topic, data: str },
+            },
+            ref: String(this.phxRef++),
+          })
+        );
+        return true;
+      }
       this.ws.send(buildMqttPublishPacket(topic, str, retain));
       return true;
     } catch {
@@ -332,6 +513,24 @@ export class OnlineRelayTransport {
 
   private sendSubscribe(topicFilter: string): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (this.backend === 'supabase') {
+      const ch = mapTopicToSupabaseChannel(topicFilter);
+      if (this.joinedChannels.has(ch)) return;
+      this.joinedChannels.add(ch);
+      try {
+        this.ws.send(
+          JSON.stringify({
+            topic: ch,
+            event: 'phx_join',
+            payload: { config: { broadcast: { self: false, ack: false } } },
+            ref: String(this.phxRef++),
+          })
+        );
+      } catch {
+        // ignore
+      }
+      return;
+    }
     const id = this.nextPacketId++ & 0xffff || 1;
     try {
       this.ws.send(buildMqttSubscribePacket(id, topicFilter));
@@ -346,7 +545,18 @@ export class OnlineRelayTransport {
       if (this.isConnected() && this.ws) {
         this.lastPingSentAt = Date.now();
         try {
-          this.ws.send(buildMqttPingReqPacket());
+          if (this.backend === 'supabase') {
+            this.ws.send(
+              JSON.stringify({
+                topic: 'phoenix',
+                event: 'heartbeat',
+                payload: {},
+                ref: String(this.phxRef++),
+              })
+            );
+          } else {
+            this.ws.send(buildMqttPingReqPacket());
+          }
         } catch {
           // ignore
         }
@@ -364,6 +574,8 @@ export class OnlineRelayTransport {
   private cleanup(): void {
     this.stopPingLoop();
     this.connected = false;
+    this.backend = 'none';
+    this.joinedChannels.clear();
     if (this.ws) {
       try {
         this.ws.onopen = null;
