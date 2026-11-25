@@ -30,6 +30,7 @@ import {
   renderDiddyPortrait,
   type CharacterPortraitId,
 } from './portraitRenderer';
+import { renderAllItemIcons } from './itemRenderCache';
 import {
   getFlashlightCosmetic,
   saveSystem,
@@ -352,6 +353,8 @@ export class HorrorEngine {
   private disabledLightRooms = new Set<string>();
   private uvScanTimers = new Map<string, number>();
   private fpsSmoothed = 60;
+  private frameTimeMsSmoothed = 16.67;
+  private lastRenderMs = 0;
   private subtitleText: string | null = null;
   private subtitleTimer = 0;
   private drizzyGrowlCooldown = 3.5;
@@ -395,6 +398,13 @@ export class HorrorEngine {
     scientist: '',
     director: '',
   };
+  private itemRenders: Record<string, string> = {};
+  private remotePeerRigs = new Map<
+    string,
+    { group: THREE.Group; targetX: number; targetY: number; targetZ: number; targetYaw: number; floor: FloorId }
+  >();
+  private mpPingMs: number | null = null;
+  private mpSpectating = false;
   private clueMeshes = new Map<string, THREE.Group>();
   private noisePropMeshes = new Map<string, THREE.Group>();
   private rechargeVisuals = new Map<string, { group: THREE.Group; statusMat: THREE.MeshStandardMaterial }>();
@@ -554,6 +564,9 @@ export class HorrorEngine {
   // Pre-allocated scratch objects
   private scratchVecA = new THREE.Vector3();
   private scratchVecB = new THREE.Vector3();
+  private scratchVecC = new THREE.Vector3();
+  private scratchVecD = new THREE.Vector3();
+  private scratchColor = new THREE.Color();
   private scratchMat4 = new THREE.Matrix4();
 
   constructor(container: HTMLElement, callbacks: EngineCallbacks) {
@@ -642,6 +655,8 @@ export class HorrorEngine {
     this.moonLight.shadow.bias = -0.0005;
     this.moonLight.shadow.normalBias = 0.025;
     this.moonLight.shadow.radius = 2.4;
+    this.moonLight.shadow.autoUpdate = false;
+    this.moonLight.shadow.needsUpdate = true;
     this.scene.add(this.moonLight);
     this.scene.add(this.moonLightTarget);
 
@@ -732,6 +747,9 @@ export class HorrorEngine {
       this.equippedDiddySkin
     );
 
+    // Render 128x128 transparent 3D hero icons for every collectible & equippable item once at startup (0 extra GPU contexts!)
+    this.itemRenders = renderAllItemIcons(this.renderer, this.envRenderTarget.texture);
+
     this.layout = generateMansionLayout(202509, this.difficulty);
     this.buildWorldScene();
     this.applySettings(this.settings);
@@ -751,6 +769,125 @@ export class HorrorEngine {
 
   public getCharacterPortraits(): Record<CharacterPortraitId, string> {
     return this.characterPortraits;
+  }
+
+  public getItemRenders(): Record<string, string> {
+    return this.itemRenders;
+  }
+
+  public setMultiplayerPeers(
+    peers: { id: string; x: number; y: number; z: number; yaw: number; floor: FloorId; alive: boolean }[],
+    pingMs: number | null,
+    spectating: boolean
+  ): void {
+    this.mpPingMs = pingMs;
+    this.mpSpectating = spectating;
+
+    const seen = new Set<string>();
+    for (const peer of peers) {
+      seen.add(peer.id);
+      let entry = this.remotePeerRigs.get(peer.id);
+      if (!entry) {
+        const group = createVoxelSurvivorRig(this.materialPack);
+        group.position.set(peer.x, peer.y, peer.z);
+        group.rotation.y = peer.yaw;
+        group.visible = peer.alive;
+        this.scene.add(group);
+        entry = {
+          group,
+          targetX: peer.x,
+          targetY: peer.y,
+          targetZ: peer.z,
+          targetYaw: peer.yaw,
+          floor: peer.floor,
+        };
+        this.remotePeerRigs.set(peer.id, entry);
+      } else {
+        entry.targetX = peer.x;
+        entry.targetY = peer.y;
+        entry.targetZ = peer.z;
+        entry.targetYaw = peer.yaw;
+        entry.floor = peer.floor;
+        entry.group.visible = peer.alive;
+      }
+    }
+
+    for (const [id, entry] of this.remotePeerRigs.entries()) {
+      if (!seen.has(id)) {
+        this.scene.remove(entry.group);
+        this.remotePeerRigs.delete(id);
+      }
+    }
+  }
+
+  public getLocalPlayerSyncState(): {
+    x: number;
+    y: number;
+    z: number;
+    yaw: number;
+    floor: FloorId;
+    crouching: boolean;
+    flashlightOn: boolean;
+    alive: boolean;
+  } {
+    return {
+      x: this.px,
+      y: this.py,
+      z: this.pz,
+      yaw: this.yaw,
+      floor: this.pFloor,
+      crouching: this.crouching,
+      flashlightOn: this.flashlightOn,
+      alive: this.health > 0 && this.mode !== 'defeat' && this.mode !== 'jumpscare',
+    };
+  }
+
+  public applyRemoteDoorToggle(doorId: string, isOpen: boolean, isUnlocked: boolean): void {
+    const door = this.layout.doors.find((d) => d.id === doorId);
+    if (!door) return;
+    door.isOpen = isOpen;
+    door.isUnlocked = isUnlocked;
+    const dv = this.doorVisuals.find((v) => v.def.id === doorId);
+    if (isUnlocked) {
+      if (dv?.padlockMesh) dv.padlockMesh.visible = false;
+      if (dv?.plankGroup) dv.plankGroup.visible = false;
+    }
+    if (this.moonLight.castShadow) {
+      this.moonLight.shadow.needsUpdate = true;
+    }
+    this.emitHud();
+  }
+
+  public applyRemoteGeneratorFixed(): void {
+    if (this.generatorFixed) return;
+    this.fuseInstalled = true;
+    this.generatorFixed = true;
+    this.blackoutActive = false;
+    this.blackoutAlertTimer = 0;
+    this.securityPowerPct = Math.min(100, this.securityPowerPct + 40);
+    this.audio.playPowerRestore();
+    const gv = this.furnitureVisuals.find((f) => f.def.kind === 'generator_lever');
+    if (gv?.statusMat) {
+      gv.statusMat.color.setHex(0x22c55e);
+      gv.statusMat.emissive.setHex(0x16a34a);
+    }
+    this.showBanner('ENERGIA RESTAURADA! Luzes do complexo e Sala de Segurança reativadas!');
+    this.emitHud();
+  }
+
+  private updateRemotePeerRigs(dt: number): void {
+    if (this.remotePeerRigs.size === 0) return;
+    const k = Math.min(1, dt * 12);
+    for (const entry of this.remotePeerRigs.values()) {
+      if (!entry.group.visible) continue;
+      entry.group.position.x += (entry.targetX - entry.group.position.x) * k;
+      entry.group.position.y += (entry.targetY - entry.group.position.y) * k;
+      entry.group.position.z += (entry.targetZ - entry.group.position.z) * k;
+      let diff = entry.targetYaw - entry.group.rotation.y;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      entry.group.rotation.y += diff * k;
+    }
   }
 
   private setBodyState(state: 'title' | 'playing' | 'paused' | 'gameover'): void {
@@ -910,9 +1047,12 @@ export class HorrorEngine {
   private triggerHaptic(durationMs: number, strength = 0.45): void {
     if (typeof navigator === 'undefined') return;
     if (this.settings.controls.rumble === false) return;
+    const rumbleScale = Math.max(0, Math.min(1, this.settings.controls.rumbleStrength ?? 0.8));
+    if (rumbleScale <= 0.01) return;
+    const scaledStrength = Math.min(1, strength * rumbleScale);
     if (this.inputController.getMode() === 'touch' && typeof navigator.vibrate === 'function') {
       try {
-        navigator.vibrate(durationMs);
+        navigator.vibrate(Math.max(8, Math.round(durationMs * rumbleScale)));
       } catch {
         // ignore
       }
@@ -927,8 +1067,8 @@ export class HorrorEngine {
         act
           .playEffect('dual-rumble', {
             duration: durationMs,
-            strongMagnitude: Math.min(1, strength),
-            weakMagnitude: Math.min(1, strength * 0.7),
+            strongMagnitude: scaledStrength,
+            weakMagnitude: Math.min(1, scaledStrength * 0.7),
           })
           .catch(() => {});
       }
@@ -1129,6 +1269,8 @@ export class HorrorEngine {
           this.moonLight.shadow.map = null;
         }
       }
+      this.moonLight.shadow.autoUpdate = false;
+      this.moonLight.shadow.needsUpdate = true;
     }
     this.renderer.shadowMap.needsUpdate = true;
     if (this.pergolaProjectedShadows) {
@@ -1155,6 +1297,7 @@ export class HorrorEngine {
         ? false
         : prof.postProcessingEnabled;
     this.usePostProcessing = !this.isSoftwareGl && postWanted;
+    const vhsMult = Math.max(0, Math.min(1, next.video.vhsIntensity ?? 0.65));
     if (this.usePostProcessing) {
       this.ensurePostProcessing();
       if (this.composer) {
@@ -1164,8 +1307,10 @@ export class HorrorEngine {
         this.bloomPass.strength = next.graphicsQuality === 'ultra' ? 0.38 : 0.25;
       }
       if (this.filmPass) {
-        this.filmPass.uniforms.uChromatic.value = next.graphicsQuality === 'ultra' ? 0.0016 : 0.00095;
-        this.filmPass.uniforms.uGrain.value = next.graphicsQuality === 'ultra' ? 0.036 : 0.026;
+        this.filmPass.uniforms.uChromatic.value =
+          (next.graphicsQuality === 'ultra' ? 0.0016 : 0.00095) * vhsMult;
+        this.filmPass.uniforms.uGrain.value =
+          (next.graphicsQuality === 'ultra' ? 0.036 : 0.026) * vhsMult;
       }
     }
 
@@ -1176,8 +1321,10 @@ export class HorrorEngine {
       this.courtyardRainLines.visible = next.video.rainParticles ?? true;
     }
 
+    const renderDist = Math.max(0.5, Math.min(1.5, next.video.renderDistance ?? 1.0));
     this.currentFov = next.video.fov;
     this.camera.fov = next.video.fov;
+    this.camera.far = Math.round(115 * renderDist);
     this.camera.updateProjectionMatrix();
     this.handleResize();
 
@@ -1928,7 +2075,10 @@ export class HorrorEngine {
 
   addMobileLookDelta(dx: number, dy: number): void {
     if (this.mode !== 'playing' || this.hasActiveModal()) return;
-    const baseSens = 0.0044 * this.settings.controls.touchSensitivity;
+    const crouchMult = this.crouching
+      ? Math.max(0.3, Math.min(1.0, this.settings.controls.crouchSensitivityMult ?? 0.7))
+      : 1.0;
+    const baseSens = 0.0044 * this.settings.controls.touchSensitivity * crouchMult;
     const sensX = baseSens * (this.settings.controls.lookSensitivityX ?? 1.0);
     const sensY = baseSens * (this.settings.controls.lookSensitivityY ?? 1.0);
     const invertSign = this.settings.controls.invertY ? -1 : 1;
@@ -2117,7 +2267,7 @@ export class HorrorEngine {
           this.adrenalineBurstTimer = 2.5;
         }
         this.advanceAndNotifyAchievement('taser_specialist', 1);
-        const chestPos = new THREE.Vector3(this.ai.x, this.ai.y + 1.32, this.ai.z);
+        const chestPos = this.scratchVecC.set(this.ai.x, this.ai.y + 1.32, this.ai.z);
         this.spawnTaserDartsAndWires(chestPos, true, Math.min(4.5, diffCfg.diddyStunDuration));
         this.spawnBurstParticles(chestPos, 0x38bdf8, 14, 0.045, 2.8);
         this.showBanner(
@@ -2129,7 +2279,7 @@ export class HorrorEngine {
     }
 
     if (!hitDiddy) {
-      const missPos = new THREE.Vector3(
+      const missPos = this.scratchVecC.set(
         this.px + fwdX * 7.5,
         Math.max(this.py + 0.3, this.py + this.currentEyeHeight + fwdY * 7.5),
         this.pz + fwdZ * 7.5
@@ -2157,8 +2307,8 @@ export class HorrorEngine {
     });
     const dartLeft = new THREE.Mesh(dartGeo, dartMat);
     const dartRight = new THREE.Mesh(dartGeo, dartMat);
-    dartLeft.position.copy(hitPoint).add(new THREE.Vector3(-0.1, 0.04, 0));
-    dartRight.position.copy(hitPoint).add(new THREE.Vector3(0.1, -0.04, 0));
+    dartLeft.position.copy(hitPoint).add(this.scratchVecD.set(-0.1, 0.04, 0));
+    dartRight.position.copy(hitPoint).add(this.scratchVecD.set(0.1, -0.04, 0));
     group.add(dartLeft, dartRight);
 
     const makeWire = () => {
@@ -2420,7 +2570,7 @@ export class HorrorEngine {
         if (mesh) {
           // Physical Item Grab Animation (ZERO instant teleport!): pull real 3D mesh smoothly toward hand,
           // then completely detach from worldGroup so it can NEVER stay floating in mid-air!
-          const worldPos = new THREE.Vector3();
+          const worldPos = this.scratchVecC;
           mesh.getWorldPosition(worldPos);
           if (mesh.parent && mesh.parent !== this.worldGroup) {
             mesh.parent.remove(mesh);
@@ -2663,8 +2813,8 @@ export class HorrorEngine {
           this.audio.playFuseSnapSpark();
           const gv = this.furnitureVisuals.find((f) => f.def.kind === 'generator_lever');
           if (gv) {
-            this.spawnBurstParticles(new THREE.Vector3(gv.def.x, gv.def.y + 1.1, gv.def.z), 0xfbbf24, 12, 0.04, 3.2);
-            this.spawnBurstParticles(new THREE.Vector3(gv.def.x, gv.def.y + 1.15, gv.def.z), 0x38bdf8, 8, 0.035, 2.8);
+            this.spawnBurstParticles(this.scratchVecC.set(gv.def.x, gv.def.y + 1.1, gv.def.z), 0xfbbf24, 12, 0.04, 3.2);
+            this.spawnBurstParticles(this.scratchVecC.set(gv.def.x, gv.def.y + 1.15, gv.def.z), 0x38bdf8, 8, 0.035, 2.8);
           }
           this.showBanner('Fusível Industrial instalado! Puxe a alavanca novamente para religar a energia!');
           this.emitHud();
@@ -2767,6 +2917,10 @@ export class HorrorEngine {
     while (this.worldGroup.children.length > 0) {
       this.worldGroup.remove(this.worldGroup.children[0]);
     }
+    for (const entry of this.remotePeerRigs.values()) {
+      this.scene.remove(entry.group);
+    }
+    this.remotePeerRigs.clear();
     this.worldRegistry.disposeAll();
     if (this.waterManager) {
       this.waterManager.dispose();
@@ -4092,7 +4246,7 @@ export class HorrorEngine {
           if (dv?.plankGroup) dv.plankGroup.visible = false;
           this.triggerViewmodelAction('crowbar_swing');
           this.audio.playWoodSplinter();
-          const doorWorldPos = new THREE.Vector3(
+          const doorWorldPos = this.scratchVecC.set(
             (door.gx + (door.axis === 'x' ? 1 : 0.5)) * CELL_SIZE,
             this.py + 1.35,
             (door.gz + (door.axis === 'z' ? 1 : 0.5)) * CELL_SIZE
@@ -4144,12 +4298,13 @@ export class HorrorEngine {
           if (dv?.plankGroup) dv.plankGroup.visible = false;
           this.triggerViewmodelAction('crowbar_swing');
           this.audio.playWoodSplinter();
-          const doorPos = new THREE.Vector3(
+          const doorPos = this.scratchVecC.set(
             (door.gx + (door.axis === 'x' ? 1 : 0.5)) * CELL_SIZE,
             this.py + 1.35,
             (door.gz + (door.axis === 'z' ? 1 : 0.5)) * CELL_SIZE
           );
           this.spawnBurstParticles(doorPos, 0x8b5a2b, 14, 0.065, 3.6);
+          if (this.moonLight.castShadow) this.moonLight.shadow.needsUpdate = true;
           this.emitNoise(this.px, this.py, this.pz, this.pFloor, 16, 3, 'door');
           this.showBanner(`Tábuas arrancadas: ${door.name} liberada!`);
           this.emitHud();
@@ -4169,12 +4324,13 @@ export class HorrorEngine {
           this.triggerViewmodelAction('wire_snip');
           this.audio.playWorkbenchCraft();
           this.audio.playDoorCreak(true);
-          const chainPos = new THREE.Vector3(
+          const chainPos = this.scratchVecC.set(
             (door.gx + (door.axis === 'x' ? 1 : 0.5)) * CELL_SIZE,
             this.py + 1.25,
             (door.gz + (door.axis === 'z' ? 1 : 0.5)) * CELL_SIZE
           );
           this.spawnBurstParticles(chainPos, 0xfbbf24, 14, 0.042, 4.1);
+          if (this.moonLight.castShadow) this.moonLight.shadow.needsUpdate = true;
           this.emitNoise(this.px, this.py, this.pz, this.pFloor, 14, 2, 'door');
           this.showBanner('Correntes cortadas! Câmara Ômega aberta!');
           this.emitHud();
@@ -4236,6 +4392,9 @@ export class HorrorEngine {
     }
 
     door.isOpen = !door.isOpen;
+    if (this.moonLight.castShadow) {
+      this.moonLight.shadow.needsUpdate = true;
+    }
     const isQuiet = this.crouching;
     const isSlam = this.sprinting && !isQuiet;
     this.doorSwingSpeed.set(door.id, isQuiet ? 3.2 : isSlam ? 12.2 : 6.5);
@@ -4908,14 +5067,25 @@ export class HorrorEngine {
     if (this.disposed) return;
     if (this.backgroundPaused) {
       this.lastFrameMs = nowMs;
+      this.lastRenderMs = nowMs;
       this.scheduleNextFrame();
       return;
+    }
+    if (!this.isSoftwareGl) {
+      const fpsLimit = this.settings.video.fpsLimit ?? 60;
+      const minFrameMs = fpsLimit === 30 ? 32.5 : fpsLimit === 60 ? 15.8 : 0;
+      if (minFrameMs > 0 && this.lastRenderMs > 0 && nowMs - this.lastRenderMs < minFrameMs) {
+        this.scheduleNextFrame();
+        return;
+      }
+      this.lastRenderMs = nowMs;
     }
     const rawDt = (nowMs - this.lastFrameMs) / 1000;
     this.lastFrameMs = nowMs;
     const dt = Math.max(0.001, Math.min(rawDt, 0.05));
     if (rawDt > 0.001 && rawDt < 0.5) {
       this.fpsSmoothed = this.fpsSmoothed * 0.9 + (1 / rawDt) * 0.1;
+      this.frameTimeMsSmoothed = this.frameTimeMsSmoothed * 0.9 + rawDt * 1000 * 0.1;
     }
     this.totalTimeSec += dt;
 
@@ -4930,6 +5100,7 @@ export class HorrorEngine {
     }
 
     this.transitionFade = Math.max(0, this.transitionFade - dt * 1.85);
+    this.updateRemotePeerRigs(dt);
     this.updateDynamicLighting(dt);
     this.updateDustParticles(dt);
     this.updateAtmosphereAnimations(dt);
@@ -4941,8 +5112,9 @@ export class HorrorEngine {
         this.filmPass.uniforms.uTime.value = this.totalTimeSec;
       }
       if (this.filmPass?.uniforms?.uChromatic) {
+        const vhsMult = Math.max(0, Math.min(1, this.settings.video.vhsIntensity ?? 0.65));
         const baseChrom = this.settings.graphicsQuality === 'ultra' ? 0.0014 : 0.00085;
-        this.filmPass.uniforms.uChromatic.value = baseChrom + this.chromaticIntensity * 0.0085;
+        this.filmPass.uniforms.uChromatic.value = (baseChrom + this.chromaticIntensity * 0.0085) * vhsMult;
       }
       this.composer.render();
     } else {
@@ -5267,8 +5439,11 @@ export class HorrorEngine {
     }
 
     if (Math.abs(state.lookX) > 0.001 || Math.abs(state.lookY) > 0.001) {
+      const crouchMult = this.crouching
+        ? Math.max(0.3, Math.min(1.0, this.settings.controls.crouchSensitivityMult ?? 0.7))
+        : 1.0;
       const lookSpeedBase =
-        2.85 * (this.settings.controls.gamepadSensitivity ?? this.settings.controls.lookSensitivity);
+        2.85 * (this.settings.controls.gamepadSensitivity ?? this.settings.controls.lookSensitivity) * crouchMult;
       const lookSpeedX = lookSpeedBase * (this.settings.controls.lookSensitivityX ?? 1.0);
       const lookSpeedY = lookSpeedBase * (this.settings.controls.lookSensitivityY ?? 1.0);
       const invertSign = this.settings.controls.invertY ? -1 : 1;
@@ -5934,7 +6109,7 @@ export class HorrorEngine {
           this.audio.playCeilingDustRumble(stepDist);
           const ceilY = this.pFloor === 0 ? FLOOR_0_Y + GROUND_CEILING_H - 0.12 : FLOOR_MINUS_1_Y + BASEMENT_CEILING_H - 0.12;
           this.spawnBurstParticles(
-            new THREE.Vector3(this.px + (Math.random() - 0.5) * 1.6, ceilY, this.pz + (Math.random() - 0.5) * 1.6),
+            this.scratchVecC.set(this.px + (Math.random() - 0.5) * 1.6, ceilY, this.pz + (Math.random() - 0.5) * 1.6),
             0x94a3b8,
             4,
             0.036,
@@ -6459,7 +6634,7 @@ export class HorrorEngine {
           p.hissCooldown = 0.42;
           const dist = Math.hypot(p.x - this.px, p.z - this.pz);
           if (dist < 18) this.audio.playFlareHiss();
-          this.spawnBurstParticles(new THREE.Vector3(p.x, p.y + 0.1, p.z), 0xf97316, 3, 0.04, 1.8, 3.2);
+          this.spawnBurstParticles(this.scratchVecC.set(p.x, p.y + 0.1, p.z), 0xf97316, 3, 0.04, 1.8, 3.2);
         }
 
         if (p.burnTimer <= 0 && !p.detonated) {
@@ -6467,8 +6642,8 @@ export class HorrorEngine {
           const distToPlayer = Math.hypot(p.x - this.px, p.z - this.pz);
           this.audio.playFlareDetonation();
           this.emitNoise(p.x, floorY, p.z, p.floor, 42, 4, 'flare');
-          this.spawnBurstParticles(new THREE.Vector3(p.x, p.y + 0.15, p.z), 0xfbbf24, 18, 0.06, 5.2, 7.5);
-          this.spawnBurstParticles(new THREE.Vector3(p.x, p.y + 0.15, p.z), 0xef4444, 12, 0.075, 4.4, 5.5);
+          this.spawnBurstParticles(this.scratchVecC.set(p.x, p.y + 0.15, p.z), 0xfbbf24, 18, 0.06, 5.2, 7.5);
+          this.spawnBurstParticles(this.scratchVecC.set(p.x, p.y + 0.15, p.z), 0xef4444, 12, 0.075, 4.4, 5.5);
           if (distToPlayer < 10) {
             this.trauma = Math.min(1, this.trauma + (1 - distToPlayer / 10) * 0.45);
           }
@@ -6665,22 +6840,27 @@ export class HorrorEngine {
     // Realistic Midnight-Blue Night Sky vs Cold Greenish-Teal Underground vs Blackout Crimson!
     const targetSky = this.pFloor === -1 ? 0x22565c : this.blackoutActive ? 0x291820 : 0x3e5c99;
     const targetBg = this.pFloor === -1 ? 0x07171c : this.blackoutActive ? 0x12090d : 0x0a1326;
-    this.hemiLight.color.lerp(new THREE.Color(targetSky), Math.min(1, dt * 3));
+    const lerpK = Math.min(1, dt * 3);
+    this.scratchColor.setHex(targetSky);
+    this.hemiLight.color.lerp(this.scratchColor, lerpK);
     this.hemiLight.intensity = this.blackoutActive ? 0.24 : 0.56;
     this.moonLight.visible = this.pFloor === 0 && !this.blackoutActive;
+    this.scratchColor.setHex(targetBg);
     if (this.scene.background instanceof THREE.Color) {
-      this.scene.background.lerp(new THREE.Color(targetBg), Math.min(1, dt * 3));
+      this.scene.background.lerp(this.scratchColor, lerpK);
     }
 
     const diffCfg = getDifficultyConfig(this.difficulty);
     const fogUserMult = Math.max(0.4, Math.min(1.6, this.settings.video.fogDensity ?? 1.0));
+    const renderDist = Math.max(0.5, Math.min(1.5, this.settings.video.renderDistance ?? 1.0));
     const targetFog =
-      (this.mode === 'title'
+      ((this.mode === 'title'
         ? 0.044
         : (this.pFloor === -1 ? 0.068 : this.blackoutActive ? 0.072 : 0.044) * diffCfg.fogDensityMult) *
-      fogUserMult;
+        fogUserMult) /
+      renderDist;
     const fogObj = this.scene.fog as THREE.FogExp2;
-    fogObj.color.lerp(new THREE.Color(targetBg), Math.min(1, dt * 3));
+    fogObj.color.lerp(this.scratchColor, lerpK);
     fogObj.density += (targetFog - fogObj.density) * Math.min(1, dt * 4);
   }
 
@@ -6861,19 +7041,25 @@ export class HorrorEngine {
   }
 
   private updateDoorAndFurnitureAnimations(dt: number): void {
+    let anyDoorMoved = false;
     for (const dv of this.doorVisuals) {
       const target = dv.def.isOpen ? 1 : 0;
       const speed =
         dv.def.lockType === 'fnaf_blast'
           ? 11.5
           : this.doorSwingSpeed.get(dv.def.id) ?? 6.5;
-      dv.def.openProgress += (target - dv.def.openProgress) * Math.min(1, dt * speed);
+      const delta = target - dv.def.openProgress;
+      if (Math.abs(delta) > 0.005) anyDoorMoved = true;
+      dv.def.openProgress += delta * Math.min(1, dt * speed);
       if (dv.blastPanel) {
         // FNAF Blast Door slides vertically UP into the ceiling housing!
         dv.blastPanel.position.y = dv.def.openProgress * (dv.doorHeight - 0.18);
       } else {
         dv.leafPivot.rotation.y = -dv.def.openProgress * 1.52;
       }
+    }
+    if (anyDoorMoved && this.moonLight.castShadow) {
+      this.moonLight.shadow.needsUpdate = true;
     }
 
     for (const hv of this.hidingVisuals) {
@@ -7314,6 +7500,9 @@ export class HorrorEngine {
       transitionFade: this.transitionFade,
       graphicsQuality: this.settings.graphicsQuality,
       fps: Math.round(this.fpsSmoothed),
+      frameTimeMs: Math.round(this.frameTimeMsSmoothed * 10) / 10,
+      pingMs: this.mpPingMs,
+      spectating: this.mpSpectating,
       subtitleText: this.settings.audio.subtitles ? this.subtitleText : null,
       chapter2JustUnlocked: this.chapter2JustUnlocked,
       isNewBestTime: this.isNewBestTime,
@@ -7519,7 +7708,10 @@ export class HorrorEngine {
     this.lastMouseX = e.clientX;
     this.lastMouseY = e.clientY;
 
-    const baseSens = 0.0022 * this.settings.controls.lookSensitivity;
+    const crouchMult = this.crouching
+      ? Math.max(0.3, Math.min(1.0, this.settings.controls.crouchSensitivityMult ?? 0.7))
+      : 1.0;
+    const baseSens = 0.0022 * this.settings.controls.lookSensitivity * crouchMult;
     const sensX = baseSens * (this.settings.controls.lookSensitivityX ?? 1.0);
     const sensY = baseSens * (this.settings.controls.lookSensitivityY ?? 1.0);
     const invertSign = this.settings.controls.invertY ? -1 : 1;
@@ -7577,6 +7769,10 @@ export class HorrorEngine {
     window.removeEventListener('mouseup', this.handleMouseUp);
     window.removeEventListener('mousemove', this.handleMouseMove);
 
+    for (const entry of this.remotePeerRigs.values()) {
+      this.scene.remove(entry.group);
+    }
+    this.remotePeerRigs.clear();
     this.worldRegistry.disposeAll();
     if (this.waterManager) {
       this.waterManager.dispose();

@@ -198,7 +198,7 @@ test('sanitizes 4-tab GameSettings ranges and clamps custom mobile HUD layout bo
   assert.equal(sanitized.audio.subtitles, false);
   assert.equal(sanitized.controls.joystickMode, 'floating');
   assert.equal(sanitized.controls.gamepadDeadzone, 0.35);
-  assert.equal(sanitized.video.fov, 105);
+  assert.equal(sanitized.video.fov, 110);
   assert.equal(sanitized.video.brightness, 1.5);
   assert.equal(sanitized.video.resolutionScale, 0.5);
   assert.equal(sanitized.video.shadowsOverride, 'on');

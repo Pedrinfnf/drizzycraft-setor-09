@@ -20,6 +20,7 @@ interface TouchControlsProps {
   buttonOpacity: number;
   joystickMode: JoystickMode;
   customLayout: HudCustomLayout;
+  leftHanded?: boolean;
   onJoystick: (nx: number, ny: number) => void;
   onLookDelta: (dx: number, dy: number) => void;
   onSprintChange: (held: boolean) => void;
@@ -44,6 +45,7 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
   buttonOpacity,
   joystickMode,
   customLayout,
+  leftHanded = false,
   onJoystick,
   onLookDelta,
   onSprintChange,
@@ -69,7 +71,10 @@ export const TouchControls: React.FC<TouchControlsProps> = ({
   const [breathActive, setBreathActive] = useState(false);
 
   const hasCustomLayout = Object.keys(customLayout ?? {}).length > 0;
-  const getCfg = (id: HudControlId) => customLayout[id] ?? DEFAULT_HUD_LAYOUT[id];
+  const getCfg = (id: HudControlId) => {
+    const base = customLayout[id] ?? DEFAULT_HUD_LAYOUT[id];
+    return leftHanded ? { ...base, xPct: Math.round((100 - base.xPct) * 10) / 10 } : base;
+  };
 
   const isPortrait = typeof window !== 'undefined' && window.innerHeight > window.innerWidth;
   const joyScaleMult = hasCustomLayout ? getCfg('joystick').scale * buttonScale : buttonScale;

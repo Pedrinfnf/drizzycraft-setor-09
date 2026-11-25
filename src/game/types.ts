@@ -128,15 +128,30 @@ export interface CustomKeybinds {
   map: string;
 }
 
+export type Language = 'pt-BR' | 'en-US' | 'es-ES';
+
+export type FpsLimit = 30 | 60 | 120; // 120 = "120 FPS / Ilimitado"
+
+export type StickCurve = 'linear' | 'exponential';
+
+export type MinimapPosition = 'top-right' | 'top-left';
+
 export interface GameSettings {
   graphicsQuality: GraphicsQuality;
+  locale: {
+    language: Language;
+    dubbing: boolean; // Voice dubbing (speechSynthesis) on/off
+    subtitleBgOpacity: number; // 0..1
+  };
   audio: {
     master: number; // 0..1
     music: number; // 0..1 (Ambiente & Clima)
+    tension: number; // 0..1 (Música / Tensão)
     sfx: number; // 0..1 (Efeitos)
-    voiceTapes: number; // 0..1 (Fitas VHS & Rádio)
+    voiceTapes: number; // 0..1 (Vozes / Dublagem / Fitas VHS & Rádio)
     chaseHeartbeat: number; // 0..1 (Batimento & Perseguição)
     soundOcclusion: boolean; // Low-pass occlusion through walls/doors
+    nightMode: boolean; // Night audio mode (dynamic range compression)
     subtitles: boolean;
     subtitleSize: SubtitleSize;
     muted: boolean;
@@ -163,9 +178,15 @@ export interface GameSettings {
     mobileButtonOpacity: number; // 0.35..1.00
     hudCustomLayout: HudCustomLayout;
     keybinds: CustomKeybinds;
+    crouchSensitivityMult: number; // 0.3..1.0 look sensitivity multiplier while crouched
+    stickCurve: StickCurve;
+    rumbleStrength: number; // 0..1
+    interactionAssist: boolean; // Magnetic aim assist toward interactables
+    leftHanded: boolean; // Mirror touch controls (left-handed)
+    minimapPosition: MinimapPosition;
   };
   video: {
-    fov: number; // 60..105
+    fov: number; // 60..110
     brightness: number; // 0.65..1.50
     contrast: number; // 0.75..1.35
     fogDensity: number; // 0.50..1.60
@@ -179,6 +200,10 @@ export interface GameSettings {
     volumetricDust: boolean;
     rainParticles: boolean;
     showFps: boolean;
+    showFrameTime: boolean; // Frame time (ms) next to FPS counter
+    fpsLimit: FpsLimit;
+    renderDistance: number; // 0.5..1.5 culling distance multiplier
+    vhsIntensity: number; // 0..1 VHS / chromatic aberration strength
   };
   gameplay: {
     headBobIntensity: number; // 0..1.5
@@ -191,6 +216,8 @@ export interface GameSettings {
     showNoiseIndicator: boolean;
     showObjectiveHints: boolean;
     showSpeedrunTimer?: boolean;
+    showPing: boolean; // Show multiplayer ping (ms) on HUD
+    chatFilter: boolean; // Profanity filter for multiplayer chat
   };
 }
 
@@ -689,6 +716,9 @@ export interface HudSnapshot {
   chromaticIntensity: number; // 0..1 proximity/chase chromatic aberration
   staminaExhausted: boolean;
   maxBattery?: number;
+  frameTimeMs?: number; // Smoothed frame time for FPS + ms counter
+  pingMs?: number | null; // Multiplayer round-trip latency (null when offline/solo)
+  spectating?: boolean; // Multiplayer spectator mode after capture
   activePerks?: PerkId[];
   lastEndingId?: EndingId | null;
   lastMissionReport?: MissionReportSnapshot | null;

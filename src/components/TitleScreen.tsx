@@ -2,12 +2,14 @@ import React, { useState } from 'react';
 import {
   ChevronRight,
   Coins,
+  Globe,
   Lock,
   Play,
   Settings,
   ShieldAlert,
   ShoppingBag,
   Sparkles,
+  User,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -31,8 +33,12 @@ interface TitleScreenProps {
   survivalCoins?: number;
   equippedPerksCount?: number;
   unclaimedAchievementsCount?: number;
+  accountLabel?: string;
+  isSignedIn?: boolean;
   onSelectDifficulty: (d: Difficulty) => void;
   onStartChapter1: () => void;
+  onOpenPlaySelector?: () => void;
+  onOpenAccount?: () => void;
   onOpenStore?: () => void;
   onOpenSettings: () => void;
   onToggleMute: () => void;
@@ -54,8 +60,12 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   survivalCoins = 0,
   equippedPerksCount = 0,
   unclaimedAchievementsCount = 0,
+  accountLabel,
+  isSignedIn = false,
   onSelectDifficulty,
   onStartChapter1,
+  onOpenPlaySelector,
+  onOpenAccount,
   onOpenStore,
   onOpenSettings,
   onToggleMute,
@@ -97,6 +107,25 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           <span className="text-slate-500">|</span>
           <span className="tracking-wider">CAM-01 · GUARITA NORTE</span>
         </div>
+        <button
+          type="button"
+          data-testid="title-account-btn"
+          onClick={() => onOpenAccount?.()}
+          aria-label="Conta e Save na Nuvem"
+          className="horror-btn px-3 py-2 flex items-center gap-1.5 text-[11px] font-tech font-bold uppercase tracking-wider text-slate-100 cursor-pointer"
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+              isSignedIn
+                ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)]'
+                : 'bg-amber-400'
+            }`}
+          />
+          <User className="w-4 h-4 text-cyan-300" />
+          <span className="hidden sm:inline max-w-[110px] truncate">
+            {accountLabel || 'Conta'}
+          </span>
+        </button>
         <button
           type="button"
           onClick={onToggleMute}
@@ -205,7 +234,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   Nível 2 · Projeto Ômega
                 </div>
                 <div className="text-[10px] font-tech text-slate-500 mt-0.5">
-                  {chapter2Unlocked ? 'EM PRODUÇÃO' : 'BLOQUEADO'}
+                  {chapter2Unlocked ? 'ARQUIVO DESCLASSIFICADO' : 'ACESSO RESTRITO'}
                 </div>
               </button>
             </div>
@@ -277,6 +306,19 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 
                 <button
                   type="button"
+                  data-testid="title-multiplayer-btn"
+                  onClick={() => (onOpenPlaySelector ? onOpenPlaySelector() : onStartChapter1())}
+                  className="horror-btn w-full py-2.5 px-3.5 border-cyan-500/60 hover:border-cyan-300 flex items-center justify-between gap-2 text-left cursor-pointer"
+                >
+                  <span className="flex items-center gap-2 font-horror text-xs sm:text-sm font-extrabold tracking-wider text-cyan-300 truncate">
+                    <Globe className="w-4 h-4 text-cyan-400 shrink-0" />
+                    MODO SOLO &amp; MULTIPLAYER ONLINE (CROSSPLAY)
+                  </span>
+                  <ChevronRight className="w-4 h-4 text-cyan-400/80 shrink-0" />
+                </button>
+
+                <button
+                  type="button"
                   data-testid="title-store-btn"
                   onClick={() => onOpenStore?.()}
                   className="horror-btn w-full py-2.5 px-3.5 border-amber-500/60 hover:border-amber-300 flex flex-col gap-1.5 text-left cursor-pointer relative overflow-hidden"
@@ -322,13 +364,15 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   <WarningBeaconIcon className="w-4 h-4 shrink-0" />
                 )}
                 <span className="font-horror text-sm font-bold uppercase tracking-wider">
-                  {chapter2Unlocked ? 'ACESSO LIBERADO — EM DESENVOLVIMENTO' : 'ACESSO RESTRITO AO NÍVEL 2'}
+                  {chapter2Unlocked
+                    ? 'DOSSIÊ ÔMEGA DESCLASSIFICADO · NÍVEL -2'
+                    : 'ACESSO RESTRITO AO NÍVEL -2'}
                 </span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed">
                 {chapter2Unlocked
-                  ? 'Você escapou do Setor 09 e revelou o alçapão do Projeto Ômega. A Fase 2 chegará na próxima atualização.'
-                  : 'Conclua a Fase 1 em qualquer modo com P. Drizzy ativo (Fácil, Difícil ou Pesadelo) para desbloquear o Dossiê do Nível 2.'}
+                  ? 'Você escapou do Complexo Setor 09 e revelou o alçapão selado do Projeto Ômega. Os registros do Nível -2 foram arquivados na Central Tática e estão sob monitoramento ativo do Setor.'
+                  : 'Conclua a Fase 1 em qualquer modo com P. Drizzy ativo (Fácil, Difícil ou Pesadelo) para desclassificar o Dossiê do Nível -2.'}
               </p>
               <button
                 type="button"

@@ -17,6 +17,7 @@ interface GameHudProps {
   hud: HudSnapshot;
   settings: GameSettings;
   muted: boolean;
+  itemRenders?: Record<string, string>;
   onBindMinimapCanvas: (canvas: HTMLCanvasElement | null) => void;
   onOpenBackpack: () => void;
   onOpenMap: () => void;
@@ -120,6 +121,7 @@ export const GameHud: React.FC<GameHudProps> = ({
   hud,
   settings,
   muted,
+  itemRenders,
   onBindMinimapCanvas,
   onOpenBackpack,
   onOpenMap,
@@ -132,11 +134,12 @@ export const GameHud: React.FC<GameHudProps> = ({
   onInteractClick,
 }) => {
   const miniRef = useRef<HTMLCanvasElement | null>(null);
+  const minimapPosition = settings.controls.minimapPosition ?? 'top-right';
 
   useEffect(() => {
     onBindMinimapCanvas(miniRef.current);
     return () => onBindMinimapCanvas(null);
-  }, [onBindMinimapCanvas]);
+  }, [onBindMinimapCanvas, minimapPosition]);
 
   const activeItem = hud.hotbar[hud.activeSlot];
   const noiseBars = Math.min(5, Math.ceil(hud.noiseLevel * 5));
@@ -161,6 +164,39 @@ export const GameHud: React.FC<GameHudProps> = ({
       ? 'text-sm sm:text-base'
       : 'text-xs sm:text-sm';
   const useDynamicCrosshair = settings.controls.dynamicCrosshair !== false;
+  const subtitleBgOpacity = Math.max(0, Math.min(1, settings.locale?.subtitleBgOpacity ?? 0.85));
+
+  const renderMinimapBlock = () => (
+    <button
+      type="button"
+      tabIndex={-1}
+      data-testid="hud-minimap-btn"
+      data-minimap-position={minimapPosition}
+      onClick={(e) => {
+        e.currentTarget.blur();
+        onOpenMap();
+      }}
+      aria-label="Expandir Mapa Fog of War"
+      style={{ opacity: minimapOpacity }}
+      className="hud-tactical-panel p-1.5 pointer-events-auto relative cursor-pointer [@media(max-height:430px)]:hidden group self-start"
+    >
+      <div className="relative border border-slate-700/80 bg-slate-950 overflow-hidden">
+        <canvas
+          ref={miniRef}
+          width={148}
+          height={148}
+          className={`block ${minimapDimClass}`}
+        />
+        {/* Blueprint corner crosshairs */}
+        <span className="absolute top-1 left-1 text-[7px] sm:text-[8px] font-tech font-bold uppercase px-1 bg-black/85 border border-amber-500/40 text-amber-300">
+          {hud.floor === -1 ? 'NV-1' : 'NV 0'}
+        </span>
+        <span className="absolute bottom-1 right-1 text-[7px] sm:text-[8px] font-tech px-1 bg-black/85 border border-cyan-500/40 text-cyan-300">
+          {hud.exploredPct}%
+        </span>
+      </div>
+    </button>
+  );
 
   return (
     <div
@@ -385,9 +421,11 @@ export const GameHud: React.FC<GameHudProps> = ({
               </div>
             </div>
           )}
+
+          {minimapPosition === 'top-left' && renderMinimapBlock()}
         </div>
 
-        {/* Top-Right: Tactical Utility Buttons + Opt-In FPS + Blueprint Minimap */}
+        {/* Top-Right: Tactical Utility Buttons + Opt-In FPS/Ping + Blueprint Minimap */}
         <div
           className="flex flex-col items-end gap-1.5 origin-top-right"
           style={{ transform: hudScale !== 1 ? `scale(${hudScale})` : undefined }}
@@ -396,9 +434,26 @@ export const GameHud: React.FC<GameHudProps> = ({
             {settings.video.showFps && (
               <div
                 data-testid="hud-fps-counter"
-                className="hud-tactical-panel px-2 py-1 text-[10px] font-tech font-bold text-emerald-300 pointer-events-none"
+                className="hud-tactical-panel px-2 py-1 text-[10px] font-tech font-bold text-emerald-300 pointer-events-none whitespace-nowrap"
               >
                 {hud.fps} FPS
+                {settings.video.showFrameTime && hud.frameTimeMs != null
+                  ? ` · ${hud.frameTimeMs.toFixed(1)}ms`
+                  : ''}
+              </div>
+            )}
+            {settings.gameplay.showPing && hud.pingMs != null && (
+              <div
+                data-testid="hud-ping-counter"
+                className={`hud-tactical-panel px-2 py-1 text-[10px] font-tech font-bold pointer-events-none whitespace-nowrap ${
+                  hud.pingMs < 80
+                    ? 'text-emerald-300'
+                    : hud.pingMs < 150
+                    ? 'text-amber-300'
+                    : 'text-red-400'
+                }`}
+              >
+                {Math.round(hud.pingMs)} ms
               </div>
             )}
             <button
@@ -492,33 +547,7 @@ export const GameHud: React.FC<GameHudProps> = ({
           </div>
 
           {/* Clean Architectural Blueprint Minimap Module */}
-          <button
-            type="button"
-            tabIndex={-1}
-            onClick={(e) => {
-              e.currentTarget.blur();
-              onOpenMap();
-            }}
-            aria-label="Expandir Mapa Fog of War"
-            style={{ opacity: minimapOpacity }}
-            className="hud-tactical-panel p-1.5 pointer-events-auto relative cursor-pointer [@media(max-height:430px)]:hidden group"
-          >
-            <div className="relative border border-slate-700/80 bg-slate-950 overflow-hidden">
-              <canvas
-                ref={miniRef}
-                width={148}
-                height={148}
-                className={`block ${minimapDimClass}`}
-              />
-              {/* Blueprint corner crosshairs */}
-              <span className="absolute top-1 left-1 text-[7px] sm:text-[8px] font-tech font-bold uppercase px-1 bg-black/85 border border-amber-500/40 text-amber-300">
-                {hud.floor === -1 ? 'NV-1' : 'NV 0'}
-              </span>
-              <span className="absolute bottom-1 right-1 text-[7px] sm:text-[8px] font-tech px-1 bg-black/85 border border-cyan-500/40 text-cyan-300">
-                {hud.exploredPct}%
-              </span>
-            </div>
-          </button>
+          {minimapPosition === 'top-right' && renderMinimapBlock()}
         </div>
       </div>
 
@@ -645,7 +674,11 @@ export const GameHud: React.FC<GameHudProps> = ({
       {/* Optional Radio / Tape Subtitles Caption */}
       {hud.subtitleText && (
         <div className="fixed left-1/2 bottom-[118px] max-sm:portrait:bottom-[242px] sm:bottom-[126px] -translate-x-1/2 w-[92%] max-w-lg text-center pointer-events-none">
-          <div className={`inline-block hud-tactical-panel border-l-2 border-l-emerald-400 px-3.5 py-1.5 ${subtitleSizeClass} text-slate-100 leading-snug`}>
+          <div
+            data-testid="hud-subtitle-box"
+            style={{ backgroundColor: `rgba(4, 7, 13, ${subtitleBgOpacity})` }}
+            className={`inline-block border border-slate-700/70 border-l-2 border-l-emerald-400 px-3.5 py-1.5 ${subtitleSizeClass} text-slate-100 leading-snug backdrop-blur-sm`}
+          >
             {hud.subtitleText}
           </div>
         </div>
@@ -723,13 +756,28 @@ export const GameHud: React.FC<GameHudProps> = ({
                 >
                   {slot.slotIndex + 1}
                 </span>
-                {slot.itemType && (
-                  <CustomItemSvgIcon
-                    item={slot.itemType}
-                    uvActive={hud.uvMode}
-                    className="w-6 h-6 sm:w-8 sm:h-8 drop-shadow-[0_2px_4px_rgba(0,0,0,0.75)]"
-                  />
-                )}
+                {slot.itemType && (() => {
+                  const renderKey =
+                    slot.itemType === 'flashlight' && hud.uvMode ? 'flashlight_uv' : slot.itemType;
+                  const renderUrl = itemRenders?.[renderKey] || itemRenders?.[slot.itemType];
+                  if (renderUrl) {
+                    return (
+                      <img
+                        src={renderUrl}
+                        alt={slot.label}
+                        draggable={false}
+                        className="w-7 h-7 sm:w-9 sm:h-9 object-contain select-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.85)]"
+                      />
+                    );
+                  }
+                  return (
+                    <CustomItemSvgIcon
+                      item={slot.itemType}
+                      uvActive={hud.uvMode}
+                      className="w-6 h-6 sm:w-8 sm:h-8 drop-shadow-[0_2px_4px_rgba(0,0,0,0.75)]"
+                    />
+                  );
+                })()}
                 {slot.count !== undefined && (
                   <span className="absolute bottom-0.5 right-1 text-[8px] sm:text-[9px] font-tech font-black text-amber-300 bg-black/70 px-0.5 leading-tight">
                     x{slot.count}

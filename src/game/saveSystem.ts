@@ -1627,6 +1627,12 @@ export class SaveSystem {
     };
   }
 
+  mergeFromCloud(remoteRaw: unknown): SaveDataV4 {
+    const merged = mergeCloudSaveData(this.load(), remoteRaw);
+    this.persist(merged);
+    return this.load();
+  }
+
   exportBackup(): string {
     return exportSaveBackupCode(this.load());
   }
@@ -1642,6 +1648,119 @@ export class SaveSystem {
   resetCache(): void {
     this.cache = null;
   }
+}
+
+/**
+ * Losslessly merges local Guest Save v4 with a Cloud Save v4:
+ * - Takes max Survival Coins & totalCoinsEarned
+ * - Unions unlocked endings, solo difficulties, perks, cosmetics, and chapters
+ * - Takes best (fastest) clear times and highest achievement progress
+ */
+export function mergeCloudSaveData(local: SaveDataV4, remoteRaw: unknown): SaveDataV4 {
+  const remote = sanitizeSaveV4(remoteRaw);
+  const lp = local.progression;
+  const rp = remote.progression;
+
+  const mergedEndings = Array.from(new Set([...lp.unlockedEndings, ...rp.unlockedEndings]));
+  const mergedSoloDiffs = Array.from(
+    new Set([...lp.soloDifficultiesBeaten, ...rp.soloDifficultiesBeaten])
+  );
+  const mergedPerks = Array.from(new Set([...lp.unlockedPerks, ...rp.unlockedPerks]));
+  const mergedFlashlights = Array.from(
+    new Set([...lp.cosmetics.unlockedFlashlights, ...rp.cosmetics.unlockedFlashlights])
+  );
+  const mergedGloves = Array.from(
+    new Set([...lp.cosmetics.unlockedGloves, ...rp.cosmetics.unlockedGloves])
+  );
+  const mergedDiddySkins = Array.from(
+    new Set([...lp.cosmetics.unlockedDiddySkins, ...rp.cosmetics.unlockedDiddySkins])
+  );
+
+  const mergedAchievements = createDefaultAchievements();
+  for (const def of ACHIEVEMENT_CATALOG) {
+    const la = lp.achievements[def.id];
+    const ra = rp.achievements[def.id];
+    const progress = Math.max(la?.progress ?? 0, ra?.progress ?? 0);
+    const unlocked = Boolean(la?.unlocked || ra?.unlocked || progress >= def.target);
+    mergedAchievements[def.id] = {
+      progress: unlocked ? def.target : progress,
+      unlocked,
+      unlockedAt: unlocked ? Math.min(la?.unlockedAt ?? Date.now(), ra?.unlockedAt ?? Date.now()) : null,
+      claimed: Boolean(la?.claimed || ra?.claimed),
+    };
+  }
+
+  const mergedCh1Diffs = Array.from(
+    new Set([
+      ...(local.profile.completedDifficulties['ch1'] ?? []),
+      ...(remote.profile.completedDifficulties['ch1'] ?? []),
+      ...mergedSoloDiffs,
+    ])
+  );
+  const mergedTimes: Partial<Record<Difficulty, number>> = {
+    ...(remote.profile.bestTimesSec['ch1'] ?? {}),
+  };
+  for (const [d, t] of Object.entries(local.profile.bestTimesSec['ch1'] ?? {}) as [
+    Difficulty,
+    number | undefined,
+  ][]) {
+    if (typeof t === 'number' && Number.isFinite(t) && t > 0) {
+      const prev = mergedTimes[d];
+      if (prev === undefined || t < prev) mergedTimes[d] = t;
+    }
+  }
+
+  return sanitizeSaveV4({
+    saveVersion: SAVE_V4_VERSION,
+    updatedAt: Math.max(local.updatedAt, remote.updatedAt, Date.now()),
+    profile: {
+      ...local.profile,
+      completedDifficulties: { ...remote.profile.completedDifficulties, ...local.profile.completedDifficulties, ch1: mergedCh1Diffs },
+      bestTimesSec: { ...remote.profile.bestTimesSec, ...local.profile.bestTimesSec, ch1: mergedTimes },
+      totalEscapes: Math.max(local.profile.totalEscapes, remote.profile.totalEscapes),
+      totalPlaytimeSec: Math.max(local.profile.totalPlaytimeSec, remote.profile.totalPlaytimeSec),
+      argSecretsSolved: Array.from(
+        new Set([...local.profile.argSecretsSolved, ...remote.profile.argSecretsSolved])
+      ),
+    },
+    settings: local.updatedAt >= remote.updatedAt ? local.settings : remote.settings,
+    activeRun: local.activeRun ?? remote.activeRun,
+    progression: {
+      ...lp,
+      survivalCoins: Math.max(lp.survivalCoins, rp.survivalCoins),
+      totalCoinsEarned: Math.max(lp.totalCoinsEarned, rp.totalCoinsEarned),
+      soloDifficultiesBeaten: mergedSoloDiffs,
+      unlockedEndings: mergedEndings,
+      unlockedPerks: mergedPerks,
+      equippedPerks: lp.equippedPerks.length > 0 ? lp.equippedPerks : rp.equippedPerks,
+      cosmetics: {
+        unlockedFlashlights: mergedFlashlights,
+        equippedFlashlight: lp.cosmetics.equippedFlashlight,
+        unlockedGloves: mergedGloves,
+        equippedGloves: lp.cosmetics.equippedGloves,
+        unlockedDiddySkins: mergedDiddySkins,
+        equippedDiddySkin: lp.cosmetics.equippedDiddySkin,
+      },
+      achievements: mergedAchievements,
+      stats: {
+        totalRuns: Math.max(lp.stats.totalRuns, rp.stats.totalRuns),
+        totalStuns: Math.max(lp.stats.totalStuns, rp.stats.totalStuns),
+        totalFlaresUsed: Math.max(lp.stats.totalFlaresUsed, rp.stats.totalFlaresUsed),
+        totalHoldBreathSurvived: Math.max(
+          lp.stats.totalHoldBreathSurvived,
+          rp.stats.totalHoldBreathSurvived
+        ),
+        totalCrafts: Math.max(lp.stats.totalCrafts, rp.stats.totalCrafts),
+        totalVhsListened: Math.max(lp.stats.totalVhsListened, rp.stats.totalVhsListened),
+        totalUvMarksFound: Math.max(lp.stats.totalUvMarksFound, rp.stats.totalUvMarksFound),
+        totalLightSwitchesToggled: Math.max(
+          lp.stats.totalLightSwitchesToggled,
+          rp.stats.totalLightSwitchesToggled
+        ),
+        totalVentTraversals: Math.max(lp.stats.totalVentTraversals, rp.stats.totalVentTraversals),
+      },
+    },
+  });
 }
 
 export const saveSystem = new SaveSystem();

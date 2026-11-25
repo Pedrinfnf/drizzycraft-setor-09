@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Smartphone, X } from 'lucide-react';
+import { AccountModal } from './components/AccountModal';
 import { AchievementToast } from './components/AchievementToast';
 import { AnalogHorrorOverlay } from './components/AnalogHorrorOverlay';
 import { BackpackModal } from './components/BackpackModal';
@@ -9,6 +10,7 @@ import { GameHud } from './components/GameHud';
 import { HudEditorModal } from './components/HudEditorModal';
 import { JournalModal } from './components/JournalModal';
 import { MissionReportModal } from './components/MissionReportModal';
+import { MultiplayerModal } from './components/MultiplayerModal';
 import { QuickInspectModal } from './components/QuickInspectModal';
 import { SafeKeypadModal } from './components/SafeKeypadModal';
 import { SecretTerminalModal } from './components/SecretTerminalModal';
@@ -20,6 +22,7 @@ import { TouchControls } from './components/TouchControls';
 import { WorkbenchModal } from './components/WorkbenchModal';
 import { WorldMapModal } from './components/WorldMapModal';
 import { HorrorEngine } from './game/HorrorEngine';
+import { authClient, type AuthSession } from './game/authClient';
 import {
   applyNativeRangeValue,
   computeSliderNextValue,
@@ -29,6 +32,8 @@ import {
 } from './game/gamepadNav';
 import { normalizeGamepadState, type NormalizedGamepadState } from './game/inputManager';
 import { saveSystem, type ProgressionStateV4 } from './game/saveSystem';
+import { voiceDubbing } from './game/voiceDubbing';
+import { multiplayerClient } from './network/MultiplayerClient';
 import type { CharacterPortraitId } from './game/portraitRenderer';
 import type {
   AchievementToastPayload,
@@ -170,6 +175,11 @@ export default function App() {
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [storeOpen, setStoreOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [multiplayerOpen, setMultiplayerOpen] = useState(false);
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => authClient.getSession());
+  const [activeMpRoom, setActiveMpRoom] = useState<string | null>(null);
+  const [itemRenders, setItemRenders] = useState<Record<string, string>>({});
   const [toastQueue, setToastQueue] = useState<AchievementToastPayload[]>([]);
   const [hudEditorOpen, setHudEditorOpen] = useState(false);
   const [mapOpen, setMapOpen] = useState(false);
@@ -223,6 +233,14 @@ export default function App() {
     });
     engineRef.current = engine;
     setPortraits(engine.getCharacterPortraits());
+    setItemRenders(engine.getItemRenders());
+
+    // Consume Google OAuth callback token if present in URL
+    void authClient.consumeOAuthCallbackFromUrl().then((oauthSession) => {
+      if (oauthSession) {
+        setAuthSession(oauthSession);
+      }
+    });
 
     // Silent URL query params for automated visual verification
     const params = new URLSearchParams(window.location.search);
@@ -293,16 +311,67 @@ export default function App() {
     document.body.dataset.gamepadStyle = hud.gamepadStyle;
   }, [hud.inputMode, hud.gamepadStyle]);
 
-  // Pause heavy 3D background world loop while the 3D Progression Hub / Store is open (60 FPS mobile!)
+  // Sync Voice Dubbing engine with live Language & Audio settings
   useEffect(() => {
-    engineRef.current?.pauseBackgroundLoop(storeOpen);
-  }, [storeOpen]);
+    voiceDubbing.configure({
+      language: settings.locale?.language ?? 'pt-BR',
+      enabled: settings.locale?.dubbing !== false,
+      volume: (settings.audio.master ?? 0.85) * (settings.audio.voiceTapes ?? 0.95),
+      muted: settings.audio.muted,
+    });
+  }, [settings.locale, settings.audio.master, settings.audio.voiceTapes, settings.audio.muted]);
 
-  // Global Native Console / Gamepad Menu Navigation across Title, Pause, Settings, Store, Journal, Backpack, Keypads & Modals
+  // 20Hz Multiplayer Crossplay Sync Loop while in an active multiplayer match
+  useEffect(() => {
+    if (!activeMpRoom || hud.mode !== 'playing') {
+      engineRef.current?.setMultiplayerPeers([], null, false);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      const eng = engineRef.current;
+      if (!eng) return;
+      const local = eng.getLocalPlayerSyncState();
+      multiplayerClient.sendPlayerState({
+        x: local.x,
+        y: local.y,
+        z: local.z,
+        yaw: local.yaw,
+        pitch: 0,
+        crouching: local.crouching,
+        flashlightOn: local.flashlightOn,
+        uvOn: false,
+        heldItem: null,
+        captured: false,
+        spectating: false,
+        alive: local.alive,
+      });
+      const sampledMap = multiplayerClient.getAllInterpolatedPeers(Date.now());
+      const peers = Object.entries(sampledMap).map(([id, snap]) => ({
+        id,
+        x: snap.x,
+        y: snap.y,
+        z: snap.z,
+        yaw: snap.yaw,
+        floor: (snap.y < -1.5 ? -1 : 0) as 0 | -1,
+        alive: snap.alive,
+      }));
+      eng.setMultiplayerPeers(peers, multiplayerClient.pingMs, false);
+    }, 50);
+    return () => window.clearInterval(timer);
+  }, [activeMpRoom, hud.mode]);
+
+  // Pause heavy 3D background world loop while full-screen menus (Store / Account / MP Hub) are open
+  useEffect(() => {
+    engineRef.current?.pauseBackgroundLoop(storeOpen || accountOpen || multiplayerOpen);
+  }, [storeOpen, accountOpen, multiplayerOpen]);
+
+  // Global Native Console / Gamepad Menu Navigation across Title, Pause, Settings, Store, Account, MP, Journal, Backpack, Keypads & Modals
   const menuNavActive =
     hud.mode !== 'playing' ||
     settingsOpen ||
     storeOpen ||
+    accountOpen ||
+    multiplayerOpen ||
     hudEditorOpen ||
     mapOpen ||
     journalOpen ||
@@ -682,13 +751,17 @@ export default function App() {
       <div ref={mountRef} className="fixed inset-0 w-full h-full" />
 
       {/* Title Screen */}
-      {hud.mode === 'title' && !storeOpen && (
+      {hud.mode === 'title' && !storeOpen && !accountOpen && !multiplayerOpen && (
         <TitleScreen
           selectedDifficulty={selectedDifficulty}
           onSelectDifficulty={setSelectedDifficulty}
-          onStartChapter1={handleStartChapter1}
+          onStartChapter1={() => setMultiplayerOpen(true)}
+          onOpenPlaySelector={() => setMultiplayerOpen(true)}
+          onOpenAccount={() => setAccountOpen(true)}
           onOpenSettings={() => setSettingsOpen(true)}
           onOpenStore={() => setStoreOpen(true)}
+          accountLabel={authSession?.user.nickname}
+          isSignedIn={Boolean(authSession)}
           survivalCoins={progression.survivalCoins}
           equippedPerksCount={progression.equippedPerks.length}
           unclaimedAchievementsCount={unclaimedAchievementsCount}
@@ -706,7 +779,7 @@ export default function App() {
         onDismiss={() => setToastQueue((prev) => prev.slice(1))}
       />
 
-      {/* Tactical Cinematic Cutscene Overlay with 3D Rendered Portraits */}
+      {/* Tactical Cinematic Cutscene Overlay with 3D Rendered Portraits & PT/EN/ES Dubbing */}
       {cutscene && (hud.mode === 'intro_cutscene' || hud.mode === 'ending_cutscene') && (
         <CutsceneOverlay
           state={cutscene}
@@ -716,6 +789,12 @@ export default function App() {
           onAdvance={() => engineRef.current?.advanceCutscene()}
           onSkip={() => engineRef.current?.skipCutscene()}
           onVoiceBlip={handleVoiceBlip}
+          onSpeakStep={(speaker, text) => {
+            const dubSpeaker =
+              speaker === 'radio' ? 'marcos' : speaker === 'diddy' ? 'diddy' : 'survivor';
+            voiceDubbing.speak(text, dubSpeaker);
+          }}
+          onStopSpeaking={() => voiceDubbing.stop()}
         />
       )}
 
@@ -757,6 +836,7 @@ export default function App() {
                 buttonOpacity={settings.controls.mobileButtonOpacity}
                 joystickMode={settings.controls.joystickMode}
                 customLayout={settings.controls.hudCustomLayout}
+                leftHanded={settings.controls.leftHanded}
                 onJoystick={(nx, ny) => engineRef.current?.setMobileJoystick(nx, ny)}
                 onLookDelta={(dx, dy) => engineRef.current?.addMobileLookDelta(dx, dy)}
                 onSprintChange={(held) => engineRef.current?.setMobileSprint(held)}
@@ -779,6 +859,7 @@ export default function App() {
             hud={hud}
             settings={settings}
             muted={settings.audio.muted}
+            itemRenders={itemRenders}
             onBindMinimapCanvas={handleBindMinimap}
             onOpenBackpack={() => {
               setMapOpen(false);
@@ -820,6 +901,7 @@ export default function App() {
       {hud.workbenchOpen && hud.mode === 'playing' && (
         <WorkbenchModal
           hud={hud}
+          itemRenders={itemRenders}
           onCraft={(recipe) =>
             engineRef.current?.craftRecipe(recipe) ?? { ok: false, message: 'ERRO' }
           }
@@ -874,6 +956,7 @@ export default function App() {
       {backpackOpen && hud.mode === 'playing' && (
         <BackpackModal
           hud={hud}
+          itemRenders={itemRenders}
           onSelectHotbarSlot={(idx) => engineRef.current?.selectHotbarSlot(idx)}
           onReorderSlot={(from, to) => engineRef.current?.reorderInventorySlot(from, to)}
           onDropItem={(idx) => engineRef.current?.dropInventoryItem(idx)}
@@ -927,6 +1010,52 @@ export default function App() {
           onReplayEnding={handleReplayEnding}
           onDiddySkinChanged={() => engineRef.current?.syncProgressionCosmetics()}
           onPlayClick={() => engineRef.current?.playUiClick()}
+        />
+      )}
+
+      {/* Account (Google OAuth + Email/Password + Guest Migration & Cloud Save) */}
+      {accountOpen && (
+        <AccountModal
+          language={settings.locale?.language ?? 'pt-BR'}
+          session={authSession}
+          onSessionChange={(nextSession) => {
+            setAuthSession(nextSession);
+            setProgression(saveSystem.getProgression());
+            setProfile(saveSystem.getProfile());
+          }}
+          onCloudSync={() => {
+            setProgression(saveSystem.getProgression());
+            setProfile(saveSystem.getProfile());
+          }}
+          onClose={() => setAccountOpen(false)}
+        />
+      )}
+
+      {/* Solo vs. Crossplay Multiplayer Mode Selector, Room Browser, Creator & Lobby */}
+      {multiplayerOpen && (
+        <MultiplayerModal
+          language={settings.locale?.language ?? 'pt-BR'}
+          selectedDifficulty={selectedDifficulty}
+          equippedPerksCount={progression.equippedPerks.length}
+          nickname={authSession?.user.nickname ?? 'Agente-09'}
+          inputMode={hud.inputMode}
+          portraits={portraits}
+          chatFilter={settings.gameplay.chatFilter !== false}
+          onStartSolo={(diff) => {
+            setSelectedDifficulty(diff);
+            setActiveMpRoom(null);
+            setMultiplayerOpen(false);
+            tryRequestMobileFullscreenLandscape();
+            engineRef.current?.startNewGame(diff, false);
+          }}
+          onStartMultiplayer={(roomCode, diff, _seed) => {
+            setSelectedDifficulty(diff);
+            setActiveMpRoom(roomCode);
+            setMultiplayerOpen(false);
+            tryRequestMobileFullscreenLandscape();
+            engineRef.current?.startNewGame(diff, true);
+          }}
+          onClose={() => setMultiplayerOpen(false)}
         />
       )}
 

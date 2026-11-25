@@ -5,15 +5,37 @@ import { ItemSvgIcon } from './icons/GameIcons';
 
 interface WorkbenchModalProps {
   hud: HudSnapshot;
+  itemRenders?: Record<string, string>;
   onCraft: (recipe: 'crowbar' | 'stun_ammo') => { ok: boolean; message: string };
   onClose: () => void;
 }
+
+const RenderOrSvgItem: React.FC<{
+  item: WorldPickupType;
+  itemRenders?: Record<string, string>;
+  alt: string;
+  className: string;
+}> = ({ item, itemRenders, alt, className }) => {
+  const renderUrl = itemRenders?.[item];
+  if (renderUrl) {
+    return (
+      <img
+        src={renderUrl}
+        alt={alt}
+        draggable={false}
+        className={`${className} object-contain select-none`}
+      />
+    );
+  }
+  return <ItemSvgIcon item={item} className={className} />;
+};
 
 const IngredientBadge: React.FC<{
   item: WorldPickupType;
   label: string;
   owned: boolean;
-}> = ({ item, label, owned }) => (
+  itemRenders?: Record<string, string>;
+}> = ({ item, label, owned, itemRenders }) => (
   <div
     className={`flex flex-col items-center justify-center p-2 border transition-colors ${
       owned
@@ -21,7 +43,12 @@ const IngredientBadge: React.FC<{
         : 'bg-slate-950/85 border-slate-800 opacity-65'
     }`}
   >
-    <ItemSvgIcon item={item} className="w-9 h-9 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]" />
+    <RenderOrSvgItem
+      item={item}
+      itemRenders={itemRenders}
+      alt={label}
+      className="w-9 h-9 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
+    />
     <span className="text-[10px] font-tech font-bold text-slate-200 text-center mt-1 leading-tight">
       {label}
     </span>
@@ -35,7 +62,12 @@ const IngredientBadge: React.FC<{
   </div>
 );
 
-export const WorkbenchModal: React.FC<WorkbenchModalProps> = ({ hud, onCraft, onClose }) => {
+export const WorkbenchModal: React.FC<WorkbenchModalProps> = ({
+  hud,
+  itemRenders,
+  onCraft,
+  onClose,
+}) => {
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
 
   const hasRod = hud.collectedKeys.includes('crowbar_rod');
@@ -132,12 +164,27 @@ export const WorkbenchModal: React.FC<WorkbenchModalProps> = ({ hud, onCraft, on
             </div>
 
             <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] items-center gap-2">
-              <IngredientBadge item="crowbar_rod" label="Haste de Aço" owned={hasRod || hasCrowbar} />
+              <IngredientBadge
+                item="crowbar_rod"
+                label="Haste de Aço"
+                owned={hasRod || hasCrowbar}
+                itemRenders={itemRenders}
+              />
               <Plus className="w-4 h-4 text-slate-500 shrink-0" />
-              <IngredientBadge item="crowbar_hook" label="Gancho Curvo" owned={hasHook || hasCrowbar} />
+              <IngredientBadge
+                item="crowbar_hook"
+                label="Gancho Curvo"
+                owned={hasHook || hasCrowbar}
+                itemRenders={itemRenders}
+              />
               <ArrowRight className="w-4 h-4 text-amber-400 shrink-0" />
               <div className="flex flex-col items-center justify-center p-2 bg-amber-950/35 border border-amber-500/60">
-                <ItemSvgIcon item="crowbar" className="w-10 h-10 drop-shadow-[0_0_8px_rgba(245,158,11,0.4)]" />
+                <RenderOrSvgItem
+                  item="crowbar"
+                  itemRenders={itemRenders}
+                  alt="Pé-de-Cabra"
+                  className="w-10 h-10 drop-shadow-[0_0_8px_rgba(245,158,11,0.4)]"
+                />
                 <span className="text-[10px] font-tech font-bold text-amber-200 mt-1 text-center">
                   Pé-de-Cabra
                 </span>
@@ -180,12 +227,27 @@ export const WorkbenchModal: React.FC<WorkbenchModalProps> = ({ hud, onCraft, on
             </div>
 
             <div className="grid grid-cols-[1fr_auto_1fr_auto_1fr] items-center gap-2">
-              <IngredientBadge item="stun_coil" label="Bobina Cobre" owned={hasCoil} />
+              <IngredientBadge
+                item="stun_coil"
+                label="Bobina Cobre"
+                owned={hasCoil}
+                itemRenders={itemRenders}
+              />
               <Plus className="w-4 h-4 text-slate-500 shrink-0" />
-              <IngredientBadge item="stun_cell" label="Célula Volt." owned={hasCell} />
+              <IngredientBadge
+                item="stun_cell"
+                label="Célula Volt."
+                owned={hasCell}
+                itemRenders={itemRenders}
+              />
               <ArrowRight className="w-4 h-4 text-cyan-400 shrink-0" />
               <div className="flex flex-col items-center justify-center p-2 bg-cyan-950/35 border border-cyan-500/60">
-                <ItemSvgIcon item="stun_ammo" className="w-10 h-10 drop-shadow-[0_0_8px_rgba(34,211,238,0.4)]" />
+                <RenderOrSvgItem
+                  item="stun_ammo"
+                  itemRenders={itemRenders}
+                  alt="+2 Cargas Stun"
+                  className="w-10 h-10 drop-shadow-[0_0_8px_rgba(34,211,238,0.4)]"
+                />
                 <span className="text-[10px] font-tech font-bold text-cyan-200 mt-1 text-center">
                   +2 Cargas Stun
                 </span>

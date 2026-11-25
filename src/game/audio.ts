@@ -13,6 +13,7 @@ import type { CutsceneSoundCue, FloorId, GameSettings, SpeakerId, SurfaceType } 
  */
 export class HorrorAudioEngine {
   private ctx: AudioContext | null = null;
+  private masterComp: DynamicsCompressorNode | null = null;
   private masterGain: GainNode | null = null;
   private musicGain: GainNode | null = null;
   private sfxGain: GainNode | null = null;
@@ -32,10 +33,12 @@ export class HorrorAudioEngine {
 
   private masterVol = 0.85;
   private musicVol = 0.65;
+  private tensionVol = 0.75;
   private sfxVol = 0.9;
   private voiceTapesVol = 0.95;
   private chaseHeartbeatVol = 0.9;
   private soundOcclusionEnabled = true;
+  private nightMode = false;
   private muted = false;
   private currentFloor: FloorId = 0;
 
@@ -87,6 +90,7 @@ export class HorrorAudioEngine {
       comp.ratio.value = 5.5;
       comp.attack.value = 0.004;
       comp.release.value = 0.16;
+      this.masterComp = comp;
 
       this.masterGain = this.ctx.createGain();
       this.musicGain = this.ctx.createGain();
@@ -183,10 +187,12 @@ export class HorrorAudioEngine {
   applySettings(settings: GameSettings): void {
     this.masterVol = settings.audio.master;
     this.musicVol = settings.audio.music;
+    this.tensionVol = settings.audio.tension ?? 0.75;
     this.sfxVol = settings.audio.sfx;
     this.voiceTapesVol = settings.audio.voiceTapes ?? 0.95;
     this.chaseHeartbeatVol = settings.audio.chaseHeartbeat ?? 0.9;
     this.soundOcclusionEnabled = settings.audio.soundOcclusion ?? true;
+    this.nightMode = settings.audio.nightMode ?? false;
     this.muted = settings.audio.muted;
     this.applyVolumes();
   }
@@ -212,7 +218,20 @@ export class HorrorAudioEngine {
       return;
     }
     const now = this.ctx.currentTime;
-    this.masterGain.gain.setTargetAtTime(this.muted ? 0 : this.masterVol, now, 0.05);
+    // Night mode softens peaks via tighter dynamics compression and a gentle master gain cap
+    const nightMasterScale = this.nightMode ? 0.76 : 1.0;
+    if (this.masterComp) {
+      this.masterComp.threshold.setTargetAtTime(this.nightMode ? -24 : -13, now, 0.08);
+      this.masterComp.knee.setTargetAtTime(this.nightMode ? 24 : 18, now, 0.08);
+      this.masterComp.ratio.setTargetAtTime(this.nightMode ? 10 : 5.5, now, 0.08);
+      this.masterComp.attack.setTargetAtTime(this.nightMode ? 0.002 : 0.004, now, 0.08);
+      this.masterComp.release.setTargetAtTime(this.nightMode ? 0.24 : 0.16, now, 0.08);
+    }
+    this.masterGain.gain.setTargetAtTime(
+      this.muted ? 0 : this.masterVol * nightMasterScale,
+      now,
+      0.05
+    );
     this.musicGain.gain.setTargetAtTime(this.musicVol * 0.56, now, 0.08);
     this.sfxGain.gain.setTargetAtTime(this.sfxVol, now, 0.05);
     this.voiceTapesGain.gain.setTargetAtTime(this.voiceTapesVol, now, 0.05);
@@ -339,9 +358,12 @@ export class HorrorAudioEngine {
 
     const now = this.ctx.currentTime;
     if (this.chaseGain && this.chaseFilter && this.droneGain) {
-      const targetChase = isPaused ? 0.0001 : isChased ? 0.42 : dangerIntensity * 0.22;
+      const tensionScale = Math.max(0, Math.min(1, this.tensionVol));
+      const targetChase = isPaused
+        ? 0.0001
+        : (isChased ? 0.42 : dangerIntensity * 0.22) * tensionScale;
       const targetDrone = isPaused ? 0.08 : floor === -1 ? 0.34 : 0.24;
-      this.chaseGain.gain.setTargetAtTime(targetChase, now, 0.25);
+      this.chaseGain.gain.setTargetAtTime(Math.max(0.0001, targetChase), now, 0.25);
       this.chaseFilter.frequency.setTargetAtTime(220 + dangerIntensity * 460, now, 0.2);
       this.droneGain.gain.setTargetAtTime(targetDrone, now, 0.3);
     }
@@ -354,7 +376,10 @@ export class HorrorAudioEngine {
       const pulseInterval = isChased ? 0.38 : 0.58;
       if (this.chasePulseAccum >= pulseInterval) {
         this.chasePulseAccum = 0;
-        this.playChaseDrumHit(isChased ? 0.36 : 0.18);
+        const tensionScale = Math.max(0, Math.min(1, this.tensionVol));
+        if (tensionScale > 0.02) {
+          this.playChaseDrumHit((isChased ? 0.36 : 0.18) * tensionScale);
+        }
       }
     }
 
@@ -1889,12 +1914,39 @@ export class HorrorAudioEngine {
     spark.start(t, Math.random() * 0.4, 0.1);
   }
 
+  /** Short filtered noise squelch burst for voice dubbing radio transmissions */
+  playRadioStaticCue(): void {
+    const outBus = this.voiceTapesGain ?? this.sfxGain;
+    if (!this.ctx || !outBus || !this.whiteNoiseBuffer) return;
+    const t = this.ctx.currentTime;
+
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.whiteNoiseBuffer;
+
+    const bp = this.ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(1950, t);
+    bp.frequency.exponentialRampToValueAtTime(2450, t + 0.075);
+    bp.Q.value = 3.6;
+
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t);
+    g.gain.linearRampToValueAtTime(0.14, t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.11);
+
+    src.connect(bp);
+    bp.connect(g);
+    g.connect(outBus);
+    src.start(t, Math.random() * 0.4, 0.12);
+  }
+
   dispose(): void {
     this.removeGestureUnlockListeners();
     if (this.ctx) {
       this.ctx.close().catch(() => {});
       this.ctx = null;
     }
+    this.masterComp = null;
     this.musicStarted = false;
   }
 }

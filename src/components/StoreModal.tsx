@@ -675,10 +675,10 @@ export const StoreModal: React.FC<StoreModalProps> = ({
                   className="w-full h-64 sm:h-80 lg:h-[420px]"
                   label={
                     cosmeticSubTab === 'flashlight'
-                      ? 'PREVIEW 3D · LANTERNA TÁTICA'
+                      ? 'INSPEÇÃO 3D · LANTERNA TÁTICA'
                       : cosmeticSubTab === 'gloves'
-                      ? 'PREVIEW 3D · LUVAS 1ª PESSOA'
-                      : 'PREVIEW 3D · SUJEITO 09 (P. DRIZZY)'
+                      ? 'INSPEÇÃO 3D · LUVAS 1ª PESSOA'
+                      : 'INSPEÇÃO 3D · SUJEITO 09 (P. DRIZZY)'
                   }
                 />
                 <div className="p-2.5 bg-slate-950/85 border border-slate-800 text-[11px] font-tech text-slate-400 flex items-center justify-between">

@@ -5,6 +5,7 @@ import { ItemSvgIcon } from './icons/GameIcons';
 
 interface BackpackModalProps {
   hud: HudSnapshot;
+  itemRenders?: Record<string, string>;
   onSelectHotbarSlot: (slotIndex: number) => void;
   onReorderSlot: (fromIdx: number, toIdx: number) => void;
   onDropItem: (slotIndex: number) => void;
@@ -76,6 +77,7 @@ const ITEM_LORE: Partial<Record<ItemType, { category: string; desc: string }>> =
 
 export const BackpackModal: React.FC<BackpackModalProps> = ({
   hud,
+  itemRenders,
   onSelectHotbarSlot,
   onReorderSlot,
   onDropItem,
@@ -84,6 +86,22 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
   const [selectedIdx, setSelectedIdx] = useState<number>(hud.activeSlot);
   const [swapFromIdx, setSwapFromIdx] = useState<number | null>(null);
   const [quickSwapEnabled, setQuickSwapEnabled] = useState<boolean>(true);
+
+  const renderItemGraphic = (itemType: ItemType, label: string, className: string) => {
+    const key = itemType === 'flashlight' && hud.uvMode ? 'flashlight_uv' : itemType;
+    const renderUrl = itemRenders?.[key] || itemRenders?.[itemType];
+    if (renderUrl) {
+      return (
+        <img
+          src={renderUrl}
+          alt={label}
+          draggable={false}
+          className={`${className} object-contain select-none`}
+        />
+      );
+    }
+    return <ItemSvgIcon item={itemType} uvActive={hud.uvMode} className={className} />;
+  };
 
   const slots = hud.backpackItems;
   const usedCount = slots.filter((s) => s.itemType !== null).length;
@@ -217,11 +235,11 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                         <span className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_6px_rgba(251,191,36,0.9)]" />
                       )}
                       {slot.itemType ? (
-                        <ItemSvgIcon
-                          item={slot.itemType}
-                          uvActive={hud.uvMode}
-                          className="w-8 h-8 sm:w-9 sm:h-9 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
-                        />
+                        renderItemGraphic(
+                          slot.itemType,
+                          slot.label,
+                          'w-8 h-8 sm:w-9 sm:h-9 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]'
+                        )
                       ) : (
                         <span className="text-[9px] font-tech text-slate-600 uppercase">VAZIO</span>
                       )}
@@ -269,11 +287,11 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                       </span>
                       {slot.itemType ? (
                         <>
-                          <ItemSvgIcon
-                            item={slot.itemType}
-                            uvActive={hud.uvMode}
-                            className="w-8 h-8 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]"
-                          />
+                          {renderItemGraphic(
+                            slot.itemType,
+                            slot.label,
+                            'w-8 h-8 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]'
+                          )}
                           <span className="text-[9px] font-tech text-slate-300 truncate max-w-full mt-0.5">
                             {slot.label}
                           </span>
@@ -325,14 +343,14 @@ export const BackpackModal: React.FC<BackpackModalProps> = ({
                     </span>
                   </div>
 
-                  {/* Large Multi-Layer SVG Specimen Preview */}
+                  {/* Large 3D / SVG Specimen Inspection */}
                   <div className="relative h-28 bg-gradient-to-b from-slate-900/90 to-slate-950 border border-slate-700/70 flex items-center justify-center overflow-hidden">
                     <div className="absolute inset-0 tactical-grid-bg opacity-65 pointer-events-none" />
-                    <ItemSvgIcon
-                      item={selectedSlot.itemType}
-                      uvActive={hud.uvMode}
-                      className="w-16 h-16 drop-shadow-[0_6px_14px_rgba(0,0,0,0.9)] relative z-10"
-                    />
+                    {renderItemGraphic(
+                      selectedSlot.itemType,
+                      selectedSlot.label,
+                      'w-20 h-20 drop-shadow-[0_6px_14px_rgba(0,0,0,0.9)] relative z-10'
+                    )}
                     {selectedSlot.count !== undefined && (
                       <span className="absolute bottom-2 right-2 font-tech text-xs font-extrabold text-amber-300 bg-black/80 border border-amber-500/40 px-2 py-0.5">
                         QTD: {selectedSlot.count}

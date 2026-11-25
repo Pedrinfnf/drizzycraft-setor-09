@@ -3,6 +3,7 @@ import type {
   ActiveRunSnapshotV3,
   CustomKeybinds,
   Difficulty,
+  FpsLimit,
   GamepadProfile,
   GameSettings,
   GraphicsQuality,
@@ -11,6 +12,7 @@ import type {
   HudControlLayout,
   HudCustomLayout,
   JoystickMode,
+  Language,
   MinimapSizeOption,
   ProfileProgress,
   SaveDataV3,
@@ -78,17 +80,60 @@ function clamp(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, n));
 }
 
+const VALID_LANGUAGES: readonly Language[] = ['pt-BR', 'en-US', 'es-ES'];
+
+export function normalizeLanguage(raw: unknown): Language | null {
+  if (typeof raw !== 'string') return null;
+  if ((VALID_LANGUAGES as readonly string[]).includes(raw)) return raw as Language;
+  const lower = raw.toLowerCase();
+  if (lower.startsWith('pt')) return 'pt-BR';
+  if (lower.startsWith('es')) return 'es-ES';
+  if (lower.startsWith('en')) return 'en-US';
+  return null;
+}
+
+export function detectDefaultLanguage(): Language {
+  try {
+    if (typeof navigator !== 'undefined') {
+      const langs = (navigator.languages && navigator.languages.length > 0
+        ? navigator.languages
+        : [navigator.language]) as readonly string[];
+      for (const l of langs) {
+        const n = normalizeLanguage(l);
+        if (n) return n;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return 'pt-BR';
+}
+
+function normalizeFpsLimit(raw: unknown): FpsLimit {
+  const n = Number(raw);
+  if (n === 30 || n === 60 || n === 120) return n;
+  if (n === 0 || n > 120) return 120;
+  return 60;
+}
+
 export function createDefaultSettings(isMobileHint = false): GameSettings {
   const defaultQuality: GraphicsQuality = isMobileHint ? 'medium' : 'high';
   return {
     graphicsQuality: defaultQuality,
+    locale: {
+      language: detectDefaultLanguage(),
+      dubbing: true,
+      subtitleBgOpacity: 0.75,
+    },
     audio: {
       master: 0.85,
       music: 0.65,
+      tension: 0.75,
       sfx: 0.9,
       voiceTapes: 0.95,
       chaseHeartbeat: 0.9,
       soundOcclusion: true,
+      nightMode: false,
       subtitles: true,
       subtitleSize: 'md',
       muted: false,
@@ -115,6 +160,12 @@ export function createDefaultSettings(isMobileHint = false): GameSettings {
       mobileButtonOpacity: 0.82,
       hudCustomLayout: {},
       keybinds: { ...DEFAULT_KEYBINDS },
+      crouchSensitivityMult: 0.75,
+      stickCurve: 'exponential',
+      rumbleStrength: 0.8,
+      interactionAssist: true,
+      leftHanded: false,
+      minimapPosition: 'top-right',
     },
     video: {
       fov: 76,
@@ -131,6 +182,10 @@ export function createDefaultSettings(isMobileHint = false): GameSettings {
       volumetricDust: true,
       rainParticles: true,
       showFps: false,
+      showFrameTime: false,
+      fpsLimit: 60,
+      renderDistance: 1.0,
+      vhsIntensity: 0.6,
     },
     gameplay: {
       headBobIntensity: 1.0,
@@ -143,6 +198,8 @@ export function createDefaultSettings(isMobileHint = false): GameSettings {
       showNoiseIndicator: true,
       showObjectiveHints: true,
       showSpeedrunTimer: false,
+      showPing: true,
+      chatFilter: true,
     },
   };
 }
@@ -281,6 +338,7 @@ export function sanitizeSettings(raw: unknown, isMobileHint = false): GameSettin
   const def = createDefaultSettings(isMobileHint);
   if (!raw || typeof raw !== 'object') return def;
   const r = raw as Record<string, unknown>;
+  const localeRaw = (r.locale && typeof r.locale === 'object' ? r.locale : {}) as Record<string, unknown>;
   const audioRaw = (r.audio && typeof r.audio === 'object' ? r.audio : {}) as Record<string, unknown>;
   const controlsRaw = (r.controls && typeof r.controls === 'object' ? r.controls : {}) as Record<string, unknown>;
   const videoRaw = (r.video && typeof r.video === 'object' ? r.video : {}) as Record<string, unknown>;
@@ -308,14 +366,22 @@ export function sanitizeSettings(raw: unknown, isMobileHint = false): GameSettin
 
   return {
     graphicsQuality,
+    locale: {
+      language: normalizeLanguage(localeRaw.language) ?? def.locale.language,
+      dubbing: localeRaw.dubbing !== undefined ? Boolean(localeRaw.dubbing) : def.locale.dubbing,
+      subtitleBgOpacity:
+        Math.round(clamp(Number(localeRaw.subtitleBgOpacity ?? def.locale.subtitleBgOpacity), 0, 1) * 100) / 100,
+    },
     audio: {
       master: clamp(Number(audioRaw.master ?? r.masterVolume ?? def.audio.master), 0, 1),
       music: clamp(Number(audioRaw.music ?? r.ambientVolume ?? def.audio.music), 0, 1),
+      tension: clamp(Number(audioRaw.tension ?? def.audio.tension), 0, 1),
       sfx: clamp(Number(audioRaw.sfx ?? r.sfxVolume ?? def.audio.sfx), 0, 1),
       voiceTapes: clamp(Number(audioRaw.voiceTapes ?? def.audio.voiceTapes), 0, 1),
       chaseHeartbeat: clamp(Number(audioRaw.chaseHeartbeat ?? def.audio.chaseHeartbeat), 0, 1),
       soundOcclusion:
         audioRaw.soundOcclusion !== undefined ? Boolean(audioRaw.soundOcclusion) : def.audio.soundOcclusion,
+      nightMode: audioRaw.nightMode !== undefined ? Boolean(audioRaw.nightMode) : def.audio.nightMode,
       subtitles: audioRaw.subtitles !== undefined ? Boolean(audioRaw.subtitles) : def.audio.subtitles,
       subtitleSize: normalizeSubtitleSize(audioRaw.subtitleSize),
       muted: Boolean(audioRaw.muted ?? def.audio.muted),
@@ -343,9 +409,18 @@ export function sanitizeSettings(raw: unknown, isMobileHint = false): GameSettin
       mobileButtonOpacity: clamp(Number(controlsRaw.mobileButtonOpacity ?? def.controls.mobileButtonOpacity), 0.35, 1.0),
       hudCustomLayout: sanitizeHudCustomLayout(controlsRaw.hudCustomLayout),
       keybinds: sanitizeKeybinds(controlsRaw.keybinds),
+      crouchSensitivityMult:
+        Math.round(clamp(Number(controlsRaw.crouchSensitivityMult ?? def.controls.crouchSensitivityMult), 0.3, 1.0) * 100) / 100,
+      stickCurve: controlsRaw.stickCurve === 'linear' ? 'linear' : 'exponential',
+      rumbleStrength:
+        Math.round(clamp(Number(controlsRaw.rumbleStrength ?? def.controls.rumbleStrength), 0, 1) * 100) / 100,
+      interactionAssist:
+        controlsRaw.interactionAssist !== undefined ? Boolean(controlsRaw.interactionAssist) : def.controls.interactionAssist,
+      leftHanded: Boolean(controlsRaw.leftHanded ?? def.controls.leftHanded),
+      minimapPosition: controlsRaw.minimapPosition === 'top-left' ? 'top-left' : 'top-right',
     },
     video: {
-      fov: Math.round(clamp(Number(videoRaw.fov ?? r.fov ?? def.video.fov), 60, 105)),
+      fov: Math.round(clamp(Number(videoRaw.fov ?? r.fov ?? def.video.fov), 60, 110)),
       brightness: Math.round(clamp(Number(videoRaw.brightness ?? def.video.brightness), 0.65, 1.5) * 100) / 100,
       contrast: Math.round(clamp(Number(videoRaw.contrast ?? def.video.contrast), 0.75, 1.35) * 100) / 100,
       fogDensity: Math.round(clamp(Number(videoRaw.fogDensity ?? def.video.fogDensity), 0.5, 1.6) * 100) / 100,
@@ -362,6 +437,12 @@ export function sanitizeSettings(raw: unknown, isMobileHint = false): GameSettin
       volumetricDust: videoRaw.volumetricDust !== undefined ? Boolean(videoRaw.volumetricDust) : def.video.volumetricDust,
       rainParticles: videoRaw.rainParticles !== undefined ? Boolean(videoRaw.rainParticles) : def.video.rainParticles,
       showFps: Boolean(videoRaw.showFps ?? def.video.showFps),
+      showFrameTime: Boolean(videoRaw.showFrameTime ?? def.video.showFrameTime),
+      fpsLimit: normalizeFpsLimit(videoRaw.fpsLimit),
+      renderDistance:
+        Math.round(clamp(Number(videoRaw.renderDistance ?? def.video.renderDistance), 0.5, 1.5) * 100) / 100,
+      vhsIntensity:
+        Math.round(clamp(Number(videoRaw.vhsIntensity ?? def.video.vhsIntensity), 0, 1) * 100) / 100,
     },
     gameplay: {
       headBobIntensity: Math.round(clamp(Number(gameplayRaw.headBobIntensity ?? def.gameplay.headBobIntensity), 0, 1.5) * 100) / 100,
@@ -374,6 +455,8 @@ export function sanitizeSettings(raw: unknown, isMobileHint = false): GameSettin
       showNoiseIndicator: gameplayRaw.showNoiseIndicator !== undefined ? Boolean(gameplayRaw.showNoiseIndicator) : def.gameplay.showNoiseIndicator,
       showObjectiveHints: gameplayRaw.showObjectiveHints !== undefined ? Boolean(gameplayRaw.showObjectiveHints) : def.gameplay.showObjectiveHints,
       showSpeedrunTimer: gameplayRaw.showSpeedrunTimer !== undefined ? Boolean(gameplayRaw.showSpeedrunTimer) : def.gameplay.showSpeedrunTimer,
+      showPing: gameplayRaw.showPing !== undefined ? Boolean(gameplayRaw.showPing) : def.gameplay.showPing,
+      chatFilter: gameplayRaw.chatFilter !== undefined ? Boolean(gameplayRaw.chatFilter) : def.gameplay.chatFilter,
     },
   };
 }

@@ -17,6 +17,8 @@ interface CutsceneOverlayProps {
   onAdvance: () => void;
   onSkip: () => void;
   onVoiceBlip?: (speaker: SpeakerId) => void;
+  onSpeakStep?: (speaker: SpeakerId, text: string) => void;
+  onStopSpeaking?: () => void;
 }
 
 function getSpeakerMeta(speaker: SpeakerId, fallbackName: string): {
@@ -66,19 +68,26 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
   onAdvance,
   onSkip,
   onVoiceBlip,
+  onSpeakStep,
+  onStopSpeaking,
 }) => {
   const { step, chapterTitle, subtitle, stepIndex, totalSteps, progress } = state;
   const [visibleChars, setVisibleChars] = useState(0);
   const voiceBlipRef = useRef(onVoiceBlip);
   voiceBlipRef.current = onVoiceBlip;
+  const speakStepRef = useRef(onSpeakStep);
+  speakStepRef.current = onSpeakStep;
+  const stopSpeakRef = useRef(onStopSpeaking);
+  stopSpeakRef.current = onStopSpeaking;
 
   const meta = getSpeakerMeta(step.speaker, step.speakerName);
   const portraitSrc = portraits?.[meta.portraitId] ?? '';
 
-  // Smooth typewriter reveal + rhythmic speaker voice blips
+  // Smooth typewriter reveal + rhythmic speaker voice blips + optional voice dubbing
   useEffect(() => {
     setVisibleChars(0);
     if (!step.text) return;
+    speakStepRef.current?.(step.speaker, step.text);
     let idx = 0;
     let ticks = 0;
     const timer = window.setInterval(() => {
@@ -94,7 +103,10 @@ export const CutsceneOverlay: React.FC<CutsceneOverlayProps> = ({
         setVisibleChars(idx);
       }
     }, 20);
-    return () => window.clearInterval(timer);
+    return () => {
+      window.clearInterval(timer);
+      stopSpeakRef.current?.();
+    };
   }, [step.id, step.text, step.speaker]);
 
   const displayedText = step.text.slice(0, visibleChars);
