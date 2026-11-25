@@ -1,4 +1,5 @@
 import { DIFFICULTY_ORDER, doesDifficultyUnlockChapter2 } from './difficulty';
+import { cloudSync } from './cloudSync';
 import {
   DATASTORE_KEY,
   LEGACY_BEST_TIME_KEY,
@@ -1210,6 +1211,8 @@ export class SaveSystem {
         // Ignore quota errors
       }
     }
+    // Instant non-blocking cloud sync (keeps local <1ms write instant; flushes via keepalive on Android close)
+    void cloudSync.uploadSave(clean);
   }
 
   getProgression(): ProgressionStateV4 {

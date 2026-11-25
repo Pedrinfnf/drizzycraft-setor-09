@@ -74,6 +74,18 @@ export const CELL_STAIR = 3;
 export const CELL_COURTYARD = 4; // Open night sky above on Floor 0
 export const CELL_VENT = 5; // Low metallic ventilation duct (crouch-only for player, impassable for P. Diddy!)
 
+export interface FurnitureCollider {
+  id: string;
+  kind: FurniturePropDefinition['kind'];
+  floor: FloorId;
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  height: number;
+  blocksLos: boolean;
+}
+
 export interface MansionLayout {
   seed: number;
   presetIndex: number;
@@ -100,6 +112,7 @@ export interface MansionLayout {
   fnafCameras: FnafCameraDefinition[];
   tutorialPlaques: TutorialPlaqueDefinition[];
   furniture: FurniturePropDefinition[];
+  furnitureColliders: FurnitureCollider[];
   fnafButtons: {
     id: string;
     side: 'left' | 'right';
@@ -1697,6 +1710,7 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
     fnafCameras: buildFnafCameras(cameraSecretCode),
     tutorialPlaques,
     furniture,
+    furnitureColliders: buildFurnitureColliders(furniture),
     fnafButtons,
     cctvMonitorPos: { x: gridToWorld(11), y: FLOOR_0_Y + 1.15, z: gridToWorld(30.55), floor: 0 },
     spawnPoint,
@@ -2226,9 +2240,141 @@ export function isCellSolidForActor(
   return { solid: false, hitDoor: false, blockedByVentStanding: false };
 }
 
+const SOLID_FURNITURE_KINDS = new Set<FurniturePropDefinition['kind']>([
+  'bookshelf',
+  'desk_monitor',
+  'radio_desk',
+  'broken_glass_counter',
+  'dining_table',
+  'drawer_cabinet',
+  'side_table',
+  'bed_medical',
+  'crate',
+  'barrel',
+  'chemical_barrel_ooze',
+  'pipe_cluster',
+  'generator_lever',
+  'secret_terminal',
+  'specimen_cylinder',
+  'bench_broken',
+  'filing_toppled',
+  'potted_plant',
+  'standing_lamp',
+  'cell_bent_bars',
+]);
+
 /**
- * Pure grid-marching line-of-sight check for projectile/raycast systems (e.g., Stun Gun).
- * Returns false if any wall, void, or closed/locked door lies between (x0, z0) and (x1, z1).
+ * Generates solid AABB colliders (`CanCollide = true`) + Line-of-Sight occlusion heights
+ * for every physical furniture/prop in the mansion.
+ * Non-blocking wall decals and floor hatches are excluded automatically.
+ */
+export function buildFurnitureColliders(furniture: FurniturePropDefinition[]): FurnitureCollider[] {
+  const out: FurnitureCollider[] = [];
+  for (const f of furniture) {
+    if (!SOLID_FURNITURE_KINDS.has(f.kind)) continue;
+    const box = computeFurnitureBox3(f, -0.05);
+    const height = Math.max(0.4, box.max.y - f.y);
+    if (box.max.x <= box.min.x || box.max.z <= box.min.z) continue;
+    out.push({
+      id: f.id,
+      kind: f.kind,
+      floor: f.floor,
+      minX: box.min.x,
+      maxX: box.max.x,
+      minZ: box.min.z,
+      maxZ: box.max.z,
+      height,
+      blocksLos: height >= 0.8,
+    });
+  }
+  return out;
+}
+
+/**
+ * Exact 2D slab ray-vs-AABB intersection test (zero allocations, 60 FPS mobile safe).
+ */
+export function segmentIntersectsAabb2D(
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  minX: number,
+  maxX: number,
+  minZ: number,
+  maxZ: number
+): boolean {
+  const dx = x1 - x0;
+  const dz = z1 - z0;
+  let tMin = 0;
+  let tMax = 1;
+
+  if (Math.abs(dx) < 1e-8) {
+    if (x0 < minX || x0 > maxX) return false;
+  } else {
+    const invD = 1 / dx;
+    let t1 = (minX - x0) * invD;
+    let t2 = (maxX - x0) * invD;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    if (t1 > tMin) tMin = t1;
+    if (t2 < tMax) tMax = t2;
+    if (tMin > tMax) return false;
+  }
+
+  if (Math.abs(dz) < 1e-8) {
+    if (z0 < minZ || z0 > maxZ) return false;
+  } else {
+    const invD = 1 / dz;
+    let t1 = (minZ - z0) * invD;
+    let t2 = (maxZ - z0) * invD;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    if (t1 > tMin) tMin = t1;
+    if (t2 < tMax) tMax = t2;
+    if (tMin > tMax) return false;
+  }
+
+  return tMax >= 0 && tMin <= 1;
+}
+
+/**
+ * Returns true if any solid furniture collider on `floor` with height >= `targetEyeHeight`
+ * obstructs the sightline segment (x0,z0) -> (x1,z1).
+ */
+export function isSightlineBlockedByFurniture(
+  layout: MansionLayout,
+  x0: number,
+  z0: number,
+  x1: number,
+  z1: number,
+  floor: FloorId,
+  targetEyeHeight = 1.55
+): boolean {
+  const colliders = layout.furnitureColliders;
+  if (!colliders || colliders.length === 0) return false;
+  for (let i = 0; i < colliders.length; i++) {
+    const c = colliders[i];
+    if (c.floor !== floor || !c.blocksLos || c.height < targetEyeHeight) continue;
+    // Ignore collider if either endpoint is literally inside it (e.g. interacting flush with a desk)
+    const p0Inside = x0 >= c.minX && x0 <= c.maxX && z0 >= c.minZ && z0 <= c.maxZ;
+    const p1Inside = x1 >= c.minX && x1 <= c.maxX && z1 >= c.minZ && z1 <= c.maxZ;
+    if (p0Inside || p1Inside) continue;
+    if (segmentIntersectsAabb2D(x0, z0, x1, z1, c.minX, c.maxX, c.minZ, c.maxZ)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Pure grid-marching line-of-sight check for projectile/raycast systems (e.g., Stun Gun & AI).
+ * Returns false if any wall, void, closed/locked door, or tall solid furniture lies between (x0, z0) and (x1, z1).
  */
 export function hasWallLineOfSight(
   layout: MansionLayout,
@@ -2236,7 +2382,8 @@ export function hasWallLineOfSight(
   z0: number,
   x1: number,
   z1: number,
-  floor: FloorId
+  floor: FloorId,
+  targetEyeHeight = 1.55
 ): boolean {
   const dist = Math.hypot(x1 - x0, z1 - z0);
   if (dist < 0.05) return true;
@@ -2252,6 +2399,9 @@ export function hasWallLineOfSight(
     const cell = grid[cellIdx(gx, gz)];
     if (cell === CELL_VOID || cell === CELL_WALL) return false;
     if (isDoorBlockingCell(layout.doors, gx, gz, floor, false) !== null) return false;
+  }
+  if (isSightlineBlockedByFurniture(layout, x0, z0, x1, z1, floor, targetEyeHeight)) {
+    return false;
   }
   return true;
 }
@@ -2313,6 +2463,37 @@ export function resolveWorldMovement(
         }
       }
     }
+
+    // Solid Furniture Colliders (`CanCollide = true`): prevent Players AND P. Drizzy from walking through tables, cabinets, drawers, beds, counters!
+    const colliders = layout.furnitureColliders;
+    if (colliders && colliders.length > 0) {
+      const rSq = radius * radius;
+      for (let i = 0; i < colliders.length; i++) {
+        const fc = colliders[i];
+        if (fc.floor !== fl) continue;
+        const closestX = Math.max(fc.minX, Math.min(cx, fc.maxX));
+        const closestZ = Math.max(fc.minZ, Math.min(cz, fc.maxZ));
+        const dxC = cx - closestX;
+        const dzC = cz - closestZ;
+        if (dxC * dxC + dzC * dzC < rSq) {
+          // If actor started overlapping (e.g. stepping out of an adjacent hiding spot), allow escape movement that moves away from center
+          const origClosestX = Math.max(fc.minX, Math.min(x, fc.maxX));
+          const origClosestZ = Math.max(fc.minZ, Math.min(z, fc.maxZ));
+          const origDistSq = (x - origClosestX) * (x - origClosestX) + (z - origClosestZ) * (z - origClosestZ);
+          if (origDistSq < rSq) {
+            const centerX = (fc.minX + fc.maxX) * 0.5;
+            const centerZ = (fc.minZ + fc.maxZ) * 0.5;
+            const curCenterDistSq = (cx - centerX) * (cx - centerX) + (cz - centerZ) * (cz - centerZ);
+            const origCenterDistSq = (x - centerX) * (x - centerX) + (z - centerZ) * (z - centerZ);
+            if (curCenterDistSq > origCenterDistSq) {
+              continue;
+            }
+          }
+          return { collides: true, hitDoor: false, blockedByVentStanding: false };
+        }
+      }
+    }
+
     return { collides: false, hitDoor: false, blockedByVentStanding: false };
   };
 

@@ -35,6 +35,7 @@ interface TitleScreenProps {
   unclaimedAchievementsCount?: number;
   accountLabel?: string;
   isSignedIn?: boolean;
+  cloudSyncStatus?: 'synced' | 'saving' | 'offline';
   onSelectDifficulty: (d: Difficulty) => void;
   onStartChapter1: () => void;
   onOpenPlaySelector?: () => void;
@@ -62,6 +63,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   unclaimedAchievementsCount = 0,
   accountLabel,
   isSignedIn = false,
+  cloudSyncStatus = 'offline',
   onSelectDifficulty,
   onStartChapter1,
   onOpenPlaySelector,
@@ -106,6 +108,33 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
           <span className="text-red-400 font-bold tracking-wider">REC</span>
           <span className="text-slate-500">|</span>
           <span className="tracking-wider">CAM-01 · GUARITA NORTE</span>
+        </div>
+        <div
+          data-testid="cloud-sync-badge"
+          className={`hidden sm:flex items-center gap-1.5 hud-tactical-panel px-2 py-1.5 text-[10px] font-tech uppercase tracking-wider ${
+            cloudSyncStatus === 'synced'
+              ? 'text-emerald-300 border-emerald-500/40'
+              : cloudSyncStatus === 'saving'
+              ? 'text-amber-300 border-amber-500/40'
+              : 'text-slate-400 border-slate-700/60'
+          }`}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              cloudSyncStatus === 'synced'
+                ? 'bg-emerald-400'
+                : cloudSyncStatus === 'saving'
+                ? 'bg-amber-400 animate-pulse'
+                : 'bg-slate-500'
+            }`}
+          />
+          <span>
+            {cloudSyncStatus === 'synced'
+              ? 'Nuvem Sincronizada'
+              : cloudSyncStatus === 'saving'
+              ? 'Salvando na nuvem...'
+              : 'Modo Offline'}
+          </span>
         </div>
         <button
           type="button"

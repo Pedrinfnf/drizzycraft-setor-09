@@ -14,7 +14,11 @@ import {
   INTERP_DELAY_MS,
   PeerInterpolationBuffer,
 } from '../network/MultiplayerClient';
-import { CELL_SIZE } from './mansionMap';
+import { CELL_SIZE, generateMansionLayout, resolveWorldMovement } from './mansionMap';
+import { DiddyAiController, hasLineOfSight } from './ai';
+import { getDifficultyConfig } from './difficulty';
+import { CloudSyncManager } from './cloudSync';
+import { createDefaultSaveV4 } from './saveSystem';
 
 test('Solo Mode runs on deterministic 10ms GameServer across all 4 ending routes', async () => {
   // 1. Bad Ending: Solo player captured into cell -> GameServer triggers 'bad' ending
@@ -295,4 +299,90 @@ test('Client-Side Prediction + Server Reconciliation (inputSeq) & 50ms Interpola
   assert.equal(future!.x, 9);
   assert.equal(SERVER_TICK_SEC, 0.01);
   assert.ok(CELL_SIZE > 0);
+});
+
+test('Solid Furniture Colliders (CanCollide = true): block BOTH Player and P. Drizzy from walking through desks/tables/cabinets', () => {
+  const layout = generateMansionLayout(202699, 'hard');
+  assert.ok(layout.furnitureColliders.length >= 15, 'Must generate solid colliders for mansion furniture');
+
+  const desk = layout.furnitureColliders.find(
+    (c) => c.floor === 0 && (c.kind === 'dining_table' || c.kind === 'desk_monitor' || c.kind === 'drawer_cabinet')
+  )!;
+  assert.ok(desk, 'Must find a solid table/desk/cabinet collider on floor 0');
+
+  const cx = (desk.minX + desk.maxX) * 0.5;
+  const cz = (desk.minZ + desk.maxZ) * 0.5;
+  const startX = desk.minX - 0.65;
+  const startZ = cz;
+
+  // Player attempting to walk straight through the solid furniture is physically stopped!
+  const playerMove = resolveWorldMovement(layout, startX, 0, startZ, 1.4, 0, 0.36, false, false);
+  assert.equal(playerMove.hitWall, true, 'Player must collide with solid furniture');
+  assert.ok(playerMove.x < cx, 'Player must NOT walk through the center of the solid furniture');
+
+  // P. Drizzy attempting to walk straight through the solid furniture is ALSO physically stopped!
+  const diddyMove = resolveWorldMovement(layout, startX, 0, startZ, 1.4, 0, 0.42, true, false);
+  assert.equal(diddyMove.hitWall, true, 'P. Drizzy must collide with solid furniture');
+  assert.ok(diddyMove.x < cx, 'P. Drizzy must NOT walk through solid furniture');
+});
+
+test('Anti-Wallhack LOS: P. Drizzy vision raycast is blocked by solid furniture & does NOT detect crouched player behind cover', () => {
+  const layout = generateMansionLayout(202699, 'hard');
+  const cover = layout.furnitureColliders.find(
+    (c) => c.floor === 0 && c.blocksLos && c.height >= 0.9
+  )!;
+  assert.ok(cover, 'Must find a LOS-blocking solid furniture collider');
+
+  const midZ = (cover.minZ + cover.maxZ) * 0.5;
+  const diddyX = cover.minX - 1.1;
+  const playerX = cover.maxX + 1.1;
+
+  // Crouched eye height (0.82m) behind solid cover (>= 0.9m) MUST block LOS!
+  const losBlocked = hasLineOfSight(layout, diddyX, midZ, playerX, midZ, 0, 0.82);
+  assert.equal(losBlocked, false, 'P. Drizzy LOS must be blocked by solid furniture when player crouches behind it');
+
+  // Tick DiddyAiController with player crouched behind the solid cover -> MUST NOT spot or chase!
+  const ai = new DiddyAiController();
+  ai.reset(layout);
+  ai.x = diddyX;
+  ai.y = 0;
+  ai.z = midZ;
+  ai.floor = 0;
+  const ev = ai.tick({
+    dt: 0.05,
+    elapsedSec: 12.0,
+    layout,
+    diff: getDifficultyConfig('hard'),
+    playerX,
+    playerY: 0,
+    playerZ: midZ,
+    playerFloor: 0,
+    playerCrouching: true,
+    playerFlashlightOn: false,
+    playerHidingSpot: null,
+    playerEnteredHidingThisFrame: false,
+    noiseEvents: [],
+  });
+  assert.equal(ev.spottedPlayer, false, 'Hidden crouched player behind solid furniture must NOT be spotted');
+  assert.notEqual(ai.state, 'chase', 'P. Drizzy must NOT enter chase through solid furniture (zero wallhack)');
+});
+
+test('Cloud Sync Manager builds keepalive:true authenticated Bearer requests for Supabase & Firebase', () => {
+  const save = createDefaultSaveV4(false);
+  save.progression.survivalCoins = 1200;
+
+  const supaMgr = new CloudSyncManager({
+    provider: 'supabase',
+    authorizedDomain: 'pedrinfnf.github.io',
+    supabaseUrl: 'https://example.supabase.co',
+    supabaseAnonKey: 'anon_public_key_12345678901234567890',
+    firebaseApiKey: '',
+    firebaseAuthDomain: '',
+    firebaseProjectId: '',
+  });
+  const req = supaMgr.buildUploadRequest(save, { uid: 'u_123', accessToken: 'tok_abc' });
+  assert.ok(req);
+  assert.equal(req!.init.keepalive, true);
+  assert.equal((req!.init.headers as Record<string, string>)['Authorization'], 'Bearer tok_abc');
+  assert.ok(req!.url.includes('/rest/v1/user_saves'));
 });

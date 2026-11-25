@@ -32,6 +32,7 @@ import {
 } from './game/gamepadNav';
 import { normalizeGamepadState, type NormalizedGamepadState } from './game/inputManager';
 import { saveSystem, type ProgressionStateV4 } from './game/saveSystem';
+import { cloudSync, type CloudSyncState } from './game/cloudSync';
 import { voiceDubbing } from './game/voiceDubbing';
 import { multiplayerClient } from './network/MultiplayerClient';
 import type { CharacterPortraitId } from './game/portraitRenderer';
@@ -178,6 +179,7 @@ export default function App() {
   const [accountOpen, setAccountOpen] = useState(false);
   const [multiplayerOpen, setMultiplayerOpen] = useState(false);
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => authClient.getSession());
+  const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncState>(() => cloudSync.getStatus());
   const [activeMpRoom, setActiveMpRoom] = useState<string | null>(null);
   const [itemRenders, setItemRenders] = useState<Record<string, string>>({});
   const [toastQueue, setToastQueue] = useState<AchievementToastPayload[]>([]);
@@ -310,6 +312,20 @@ export default function App() {
     document.body.dataset.inputMode = hud.inputMode;
     document.body.dataset.gamepadStyle = hud.gamepadStyle;
   }, [hud.inputMode, hud.gamepadStyle]);
+
+  // Bind Android Close-Shield & reactive Cloud Sync status badge
+  useEffect(() => {
+    cloudSync.bindAndroidCloseShield();
+    return cloudSync.subscribeStatus(setCloudSyncStatus);
+  }, []);
+
+  useEffect(() => {
+    if (authSession) {
+      cloudSync.setCredentials({ uid: authSession.user.id, accessToken: authSession.token });
+    } else {
+      cloudSync.setCredentials(null);
+    }
+  }, [authSession]);
 
   // Sync Voice Dubbing engine with live Language & Audio settings
   useEffect(() => {
@@ -793,6 +809,7 @@ export default function App() {
           onOpenStore={() => setStoreOpen(true)}
           accountLabel={authSession?.user.nickname}
           isSignedIn={Boolean(authSession)}
+          cloudSyncStatus={cloudSyncStatus}
           survivalCoins={progression.survivalCoins}
           equippedPerksCount={progression.equippedPerks.length}
           unclaimedAchievementsCount={unclaimedAchievementsCount}

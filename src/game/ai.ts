@@ -23,6 +23,7 @@ import {
   inBounds,
   isCellSolidForActor,
   isDoorBlockingCell,
+  isSightlineBlockedByFurniture,
   resolveWorldMovement,
   worldToGrid,
   type MansionLayout,
@@ -265,7 +266,8 @@ export function findDualFloorPath(
 }
 
 /**
- * Unobstructed Raycast Line-of-Sight check (respects solid walls, closed doors & low vents).
+ * Unobstructed Raycast Line-of-Sight check (respects solid walls, closed doors, low vents AND solid furniture colliders!).
+ * When `targetEyeHeight` is crouched (~0.82m), tables/desks/beds/cabinets completely block P. Drizzy's vision (ZERO WALLHACK).
  */
 export function hasLineOfSight(
   layout: MansionLayout,
@@ -273,7 +275,8 @@ export function hasLineOfSight(
   z0: number,
   x1: number,
   z1: number,
-  floor: FloorId
+  floor: FloorId,
+  targetEyeHeight = 1.55
 ): boolean {
   const dx = x1 - x0;
   const dz = z1 - z0;
@@ -293,6 +296,9 @@ export function hasLineOfSight(
     // Closed FNAF blast doors and closed locked doors block vision!
     const door = isDoorBlockingCell(layout.doors, gx, gz, floor, false);
     if (door && !door.isOpen) return false;
+  }
+  if (isSightlineBlockedByFurniture(layout, x0, z0, x1, z1, floor, targetEyeHeight)) {
+    return false;
   }
   return true;
 }
@@ -512,10 +518,11 @@ export class DiddyAiController {
     if (input.playerFlashlightOn) effectiveVision *= 1.18;
     if (input.playerInVent) effectiveVision *= 0.45; // Hard to spot inside dark low vents!
 
+    const targetEyeHeight = input.playerCrouching ? 0.82 : 1.55;
     const hasDirectLosNow =
       sameFloor &&
       distToPlayer <= effectiveVision &&
-      hasLineOfSight(layout, this.x, this.z, input.playerX, input.playerZ, this.floor);
+      hasLineOfSight(layout, this.x, this.z, input.playerX, input.playerZ, this.floor, targetEyeHeight);
 
     // 100% Fair Hiding Spots (ZERO auto-hitkill when hidden unseen!)
     if (input.playerHidingSpot) {
@@ -798,7 +805,10 @@ export class DiddyAiController {
       input.playerFloor === this.floor
     ) {
       const catchDist = Math.hypot(input.playerX - this.x, input.playerZ - this.z);
-      if (catchDist < 1.12 && hasLineOfSight(layout, this.x, this.z, input.playerX, input.playerZ, this.floor)) {
+      if (
+        catchDist < 1.12 &&
+        hasLineOfSight(layout, this.x, this.z, input.playerX, input.playerZ, this.floor, input.playerCrouching ? 0.82 : 1.55)
+      ) {
         events.hitPlayer = true;
         this.hitCooldown = 2.6;
       }
