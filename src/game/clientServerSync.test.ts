@@ -18,7 +18,7 @@ import { CELL_SIZE, generateMansionLayout, resolveWorldMovement } from './mansio
 import { DiddyAiController, hasLineOfSight } from './ai';
 import { getDifficultyConfig } from './difficulty';
 import { CloudSyncManager } from './cloudSync';
-import { createDefaultSaveV4 } from './saveSystem';
+import { createDefaultSaveV4, mergeCloudSaveData } from './saveSystem';
 
 test('Solo Mode runs on deterministic 10ms GameServer across all 4 ending routes', async () => {
   // 1. Bad Ending: Solo player captured into cell -> GameServer triggers 'bad' ending
@@ -385,4 +385,25 @@ test('Cloud Sync Manager builds keepalive:true authenticated Bearer requests for
   assert.equal(req!.init.keepalive, true);
   assert.equal((req!.init.headers as Record<string, string>)['Authorization'], 'Bearer tok_abc');
   assert.ok(req!.url.includes('/rest/v1/user_saves'));
+});
+
+test('Lossless Local-to-Cloud Migration preserves max coins, endings, perks and cosmetics across local + server saves', () => {
+  const localSave = createDefaultSaveV4(false);
+  localSave.progression.survivalCoins = 1200;
+  localSave.progression.unlockedEndings = ['good', 'real'];
+  localSave.progression.unlockedPerks = ['silent_steps', 'iron_lungs'];
+
+  const remoteSave = createDefaultSaveV4(false);
+  remoteSave.progression.survivalCoins = 600;
+  remoteSave.progression.unlockedEndings = ['secret'];
+  remoteSave.progression.unlockedPerks = ['adrenaline_burst'];
+
+  const merged = mergeCloudSaveData(localSave, remoteSave);
+  assert.equal(merged.progression.survivalCoins, 1200);
+  assert.deepEqual([...merged.progression.unlockedEndings].sort(), ['good', 'real', 'secret']);
+  assert.deepEqual([...merged.progression.unlockedPerks].sort(), [
+    'adrenaline_burst',
+    'iron_lungs',
+    'silent_steps',
+  ]);
 });

@@ -237,10 +237,16 @@ export default function App() {
     setPortraits(engine.getCharacterPortraits());
     setItemRenders(engine.getItemRenders());
 
-    // Consume Google OAuth callback token if present in URL
+    // Consume Google OAuth callback token if present in URL, or refresh existing remote session
     void authClient.consumeOAuthCallbackFromUrl().then((oauthSession) => {
       if (oauthSession) {
         setAuthSession(oauthSession);
+      } else {
+        void authClient.refreshSession().then((refreshed) => {
+          if (refreshed && refreshed.mode === 'remote') {
+            setAuthSession(refreshed);
+          }
+        });
       }
     });
 
@@ -320,8 +326,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (authSession) {
+    if (authSession && authSession.mode === 'remote') {
       cloudSync.setCredentials({ uid: authSession.user.id, accessToken: authSession.token });
+      const merged = saveSystem.applyCloudSave(authSession.cloudSave);
+      setProfile(merged.profile);
+      setProgression(merged.progression);
+      setSettings(merged.settings);
     } else {
       cloudSync.setCredentials(null);
     }

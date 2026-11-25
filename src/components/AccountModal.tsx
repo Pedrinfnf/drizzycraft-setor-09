@@ -40,6 +40,7 @@ export const AccountModal: React.FC<AccountModalProps> = ({
   const [nickname, setNickname] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [migratePassword, setMigratePassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [status, setStatus] = useState<{ kind: 'ok' | 'err' | 'info'; text: string } | null>(null);
@@ -161,6 +162,42 @@ export const AccountModal: React.FC<AccountModalProps> = ({
     }
   };
 
+  const handleMigrateLocalToCloud = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!session) return;
+    if (migratePassword.length < 6) {
+      setStatus({ kind: 'err', text: t(language, 'account.errorShortPassword') });
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      const guestSave = saveSystem.load() as unknown as Record<string, unknown>;
+      const res = await authClient.login({
+        email: session.user.email,
+        password: migratePassword,
+        guestSave,
+      });
+      if (res.ok && res.session) {
+        onSessionChange(res.session);
+        setMigratePassword('');
+        setStatus({
+          kind: 'ok',
+          text: 'Conta e progresso migrados para a Nuvem (Supabase) com sucesso!',
+        });
+      } else {
+        setStatus({
+          kind: 'err',
+          text: res.error || 'Senha incorreta ou falha ao migrar conta.',
+        });
+      }
+    } catch {
+      setStatus({ kind: 'err', text: 'Erro de comunicação ao migrar conta.' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleLogout = async () => {
     setBusy(true);
     try {
@@ -271,9 +308,43 @@ export const AccountModal: React.FC<AccountModalProps> = ({
 
                 <div className="flex items-center gap-2 text-[11px] font-tech text-emerald-300 bg-emerald-950/40 border border-emerald-500/35 px-3 py-2">
                   <ShieldCheck className="w-4 h-4 shrink-0" />
-                  <span>{t(language, 'account.migrationBadge')}</span>
+                  <span>
+                    {session.mode === 'remote'
+                      ? t(language, 'account.migrationBadge')
+                      : 'Conta criada no modo local antigo — migre para a Nuvem Supabase abaixo sem perder nada.'}
+                  </span>
                 </div>
               </div>
+
+              {session.mode === 'local' && (
+                <form
+                  onSubmit={handleMigrateLocalToCloud}
+                  className="p-3.5 bg-amber-950/35 border border-amber-500/55 space-y-2.5"
+                >
+                  <div className="text-[11px] font-tech font-extrabold uppercase tracking-wider text-amber-300">
+                    Migrar Conta Local → Servidor Nuvem (Zero Perda)
+                  </div>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">
+                    Digite sua senha atual para enviar suas moedas, finais, perks e conquistas salvos localmente direto para o servidor Supabase.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      type="password"
+                      value={migratePassword}
+                      onChange={(e) => setMigratePassword(e.target.value)}
+                      placeholder="Sua senha atual"
+                      className="flex-1 bg-slate-950 border border-amber-500/50 px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400"
+                    />
+                    <button
+                      type="submit"
+                      disabled={busy}
+                      className="horror-btn horror-btn-amber px-3 py-2 text-[11px] font-tech font-extrabold uppercase tracking-wider cursor-pointer shrink-0"
+                    >
+                      {busy ? 'Migrando...' : 'Migrar Agora'}
+                    </button>
+                  </div>
+                </form>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 <button

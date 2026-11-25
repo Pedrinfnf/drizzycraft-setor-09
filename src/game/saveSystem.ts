@@ -1647,6 +1647,21 @@ export class SaveSystem {
     return { ok: true, data: this.load() };
   }
 
+  /**
+   * Losslessly merges a Cloud Save v4 with the current local SaveDataV4,
+   * persists locally AND pushes the merged superset back to Cloud Save.
+   */
+  applyCloudSave(remoteRaw: unknown): SaveDataV4 {
+    const local = this.load();
+    if (!remoteRaw || typeof remoteRaw !== 'object') {
+      this.persist(local);
+      return local;
+    }
+    const merged = mergeCloudSaveData(local, remoteRaw);
+    this.persist(merged);
+    return merged;
+  }
+
   /** Helper for tests or full reset */
   resetCache(): void {
     this.cache = null;

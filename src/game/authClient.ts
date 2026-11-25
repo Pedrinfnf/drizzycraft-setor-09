@@ -1,6 +1,6 @@
 import { CLOUD_CONFIG, isCloudConfigured } from '../config/cloudConfig';
 import { cloudSync } from './cloudSync';
-import type { SaveDataV4 } from './saveSystem';
+import { mergeCloudSaveData, sanitizeSaveV4, type SaveDataV4 } from './saveSystem';
 
 export type AuthProvider = 'email' | 'google' | 'guest';
 
@@ -274,6 +274,32 @@ async function supabaseAuthFetch<T>(
   }
 }
 
+function collectMergedLocalSave(
+  email: string,
+  guestSave?: Record<string, unknown> | null,
+  remoteCloudSave?: Record<string, unknown> | null,
+): SaveDataV4 | null {
+  const localAcc = loadLocalAccounts().find((a) => a.email === email);
+  const candidates: unknown[] = [];
+  if (localAcc?.cloudSave) candidates.push(localAcc.cloudSave);
+  if (guestSave) candidates.push(guestSave);
+  if (remoteCloudSave) candidates.push(remoteCloudSave);
+  if (candidates.length === 0) return null;
+  let acc = sanitizeSaveV4(candidates[0]);
+  for (let i = 1; i < candidates.length; i++) {
+    acc = mergeCloudSaveData(acc, candidates[i]);
+  }
+  return acc;
+}
+
+function removeLocalAccountAfterMigration(email: string): void {
+  const accounts = loadLocalAccounts();
+  const filtered = accounts.filter((a) => a.email !== email);
+  if (filtered.length !== accounts.length) {
+    saveLocalAccounts(filtered);
+  }
+}
+
 export const authClient = {
   isValidEmail,
 
@@ -446,10 +472,14 @@ export const authClient = {
         const user = mapSupabaseUser(sb.data.user, cleanNick);
         const token = sb.data.access_token;
         cloudSync.setCredentials({ uid: user.id, accessToken: token });
+        const mergedLocal = collectMergedLocalSave(cleanEmail, guestSave, null);
         let uploadedSave: Record<string, unknown> | null = null;
-        if (guestSave) {
-          const ok = await cloudSync.uploadSave(guestSave as unknown as SaveDataV4);
-          if (ok) uploadedSave = { ...guestSave };
+        if (mergedLocal) {
+          const ok = await cloudSync.uploadSave(mergedLocal);
+          if (ok) {
+            uploadedSave = mergedLocal as unknown as Record<string, unknown>;
+            removeLocalAccountAfterMigration(cleanEmail);
+          }
         }
         const session: AuthSession = {
           token,
@@ -462,7 +492,7 @@ export const authClient = {
         return {
           ok: true,
           session,
-          migratedGuestSave: Boolean(guestSave && uploadedSave),
+          migratedGuestSave: Boolean(mergedLocal && uploadedSave),
         };
       }
     }
@@ -559,6 +589,26 @@ export const authClient = {
       });
       if (sb.reachable) {
         if (!sb.ok || !sb.data?.access_token || !sb.data.user?.id) {
+          // Transparent auto-migration: if user had a pre-Supabase local account with matching password,
+          // automatically create their real Supabase account & upload their merged local + guest save!
+          const localAccounts = loadLocalAccounts();
+          const localMatch = localAccounts.find((a) => a.email === cleanEmail);
+          if (localMatch) {
+            const checkHash = await hashLocalPassword(password, localMatch.salt);
+            if (checkHash === localMatch.passwordHash) {
+              const merged = collectMergedLocalSave(cleanEmail, guestSave, null);
+              const migrated = await this.signUp({
+                nickname: localMatch.nickname,
+                email: cleanEmail,
+                password,
+                guestSave: (merged as unknown as Record<string, unknown>) ?? guestSave ?? null,
+              });
+              if (migrated.ok) {
+                removeLocalAccountAfterMigration(cleanEmail);
+                return { ...migrated, migratedGuestSave: true };
+              }
+            }
+          }
           return {
             ok: false,
             error: sb.data?.error_description || sb.data?.msg || 'Email ou senha incorretos.',
@@ -567,19 +617,22 @@ export const authClient = {
         const user = mapSupabaseUser(sb.data.user);
         const token = sb.data.access_token;
         cloudSync.setCredentials({ uid: user.id, accessToken: token });
-        let cloudSave = (await cloudSync.fetchSave()) as unknown as Record<string, unknown> | null;
+        const remoteSave = (await cloudSync.fetchSave()) as unknown as Record<string, unknown> | null;
+        const merged = collectMergedLocalSave(cleanEmail, guestSave, remoteSave);
+        let finalCloudSave: Record<string, unknown> | null = remoteSave;
         let migratedGuestSave = false;
-        if (!cloudSave && guestSave) {
-          const ok = await cloudSync.uploadSave(guestSave as unknown as SaveDataV4);
+        if (merged) {
+          const ok = await cloudSync.uploadSave(merged);
           if (ok) {
-            cloudSave = { ...guestSave };
-            migratedGuestSave = true;
+            finalCloudSave = merged as unknown as Record<string, unknown>;
+            migratedGuestSave = Boolean(guestSave);
+            removeLocalAccountAfterMigration(cleanEmail);
           }
         }
         const session: AuthSession = {
           token,
           user,
-          cloudSave,
+          cloudSave: finalCloudSave,
           mode: 'remote',
           updatedAt: Date.now(),
         };
