@@ -1,4 +1,5 @@
 import type { Difficulty } from '../game/types';
+import { OnlineRelayTransport, RELAY_PREFIX } from './OnlineRelayTransport';
 
 // ============================================================================
 // Constants & Types
@@ -278,6 +279,13 @@ export interface MultiplayerClientOptions {
 
 export class MultiplayerClient {
   private ws: WebSocket | null = null;
+  private relay: OnlineRelayTransport | null = null;
+  private transport: 'none' | 'server' | 'relay' = 'none';
+  private relayPublicRooms = new Map<string, PublicRoomSummary & { updatedAt: number }>();
+  private relayHostHeartbeat: ReturnType<typeof setInterval> | null = null;
+  private relayRoomTopic: string | null = null;
+  private relayUnsubMsg: (() => void) | null = null;
+  private isRelayHost = false;
   private readonly customWsUrl?: string;
   private readonly apiBase: string;
   private readonly connectTimeoutMs: number;
@@ -333,12 +341,53 @@ export class MultiplayerClient {
   private resolveWsUrl(): string | null {
     if (this.customWsUrl) return this.customWsUrl;
     if (typeof window === 'undefined' || !window.location) return null;
+    // On static hosts like GitHub Pages (*.github.io), skip dead /ws probe and go straight to Global Online Relay
+    const host = window.location.hostname || '';
+    if (host.endsWith('.github.io') || host.endsWith('.pages.dev') || host.endsWith('.netlify.app')) {
+      return null;
+    }
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     return `${proto}//${window.location.host}/ws`;
   }
 
+  private async connectGlobalRelay(): Promise<boolean> {
+    if (this.relay && this.relay.isConnected()) {
+      this.transport = 'relay';
+      this.setMode('online');
+      return true;
+    }
+    const relay = new OnlineRelayTransport();
+    relay.onPingUpdate = (ms) => {
+      this.pingMs = ms;
+      this.emit('ping_update', { pingMs: ms });
+    };
+    relay.onDisconnect = () => {
+      if (this.transport === 'relay') {
+        this.transport = 'none';
+        this.setMode('disconnected');
+      }
+    };
+    const ok = await relay.connect(4000);
+    if (!ok) return false;
+
+    this.relay = relay;
+    this.transport = 'relay';
+    this.pingMs = relay.pingMs;
+    this.relayUnsubMsg?.();
+    this.relayUnsubMsg = relay.onMessage((topic, payload) => {
+      this.handleRelayMessage(topic, payload);
+    });
+    relay.subscribe(`${RELAY_PREFIX}/public/+`);
+    this.setMode('online');
+    return true;
+  }
+
   async connect(): Promise<'online' | 'local'> {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.transport === 'server' && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.setMode('online');
+      return 'online';
+    }
+    if (this.transport === 'relay' && this.relay && this.relay.isConnected()) {
       this.setMode('online');
       return 'online';
     }
@@ -347,73 +396,311 @@ export class MultiplayerClient {
       return 'local';
     }
 
+    this.setMode('connecting');
     const url = this.resolveWsUrl();
-    if (!url) {
-      this.setMode('local');
-      return 'local';
+    if (url) {
+      const serverOk = await new Promise<boolean>((resolve) => {
+        let settled = false;
+        const fail = () => {
+          if (settled) return;
+          settled = true;
+          this.cleanupSocket();
+          resolve(false);
+        };
+        const timeout = setTimeout(fail, this.connectTimeoutMs);
+        try {
+          const ws = new WebSocket(url);
+          this.ws = ws;
+          ws.onopen = () => {
+            if (settled) {
+              ws.close();
+              return;
+            }
+            settled = true;
+            clearTimeout(timeout);
+            this.transport = 'server';
+            this.setMode('online');
+            this.startPingLoop();
+            resolve(true);
+          };
+          ws.onmessage = (ev) => {
+            this.handleRawMessage(String(ev.data || ''));
+          };
+          ws.onerror = () => {
+            clearTimeout(timeout);
+            fail();
+          };
+          ws.onclose = () => {
+            clearTimeout(timeout);
+            if (!settled) {
+              fail();
+              return;
+            }
+            this.stopPingLoop();
+            this.ws = null;
+            if (this.transport === 'server') {
+              this.transport = 'none';
+              this.setMode('disconnected');
+            }
+          };
+        } catch {
+          clearTimeout(timeout);
+          fail();
+        }
+      });
+      if (serverOk) return 'online';
     }
 
-    this.setMode('connecting');
-    return new Promise<'online' | 'local'>((resolve) => {
-      let settled = false;
-      const fallbackToLocal = () => {
-        if (settled) return;
-        settled = true;
-        this.cleanupSocket();
-        this.setMode('local');
-        resolve('local');
-      };
+    // Connect to Global Online WSS Relay (real internet crossplay anywhere in the world!)
+    const relayOk = await this.connectGlobalRelay();
+    if (relayOk) return 'online';
 
-      const timeout = setTimeout(fallbackToLocal, this.connectTimeoutMs);
+    this.setMode('local');
+    return 'local';
+  }
 
-      try {
-        const ws = new WebSocket(url);
-        this.ws = ws;
+  private stopRelayHostHeartbeat(): void {
+    if (this.relayHostHeartbeat) {
+      clearInterval(this.relayHostHeartbeat);
+      this.relayHostHeartbeat = null;
+    }
+  }
 
-        ws.onopen = () => {
-          if (settled) {
-            ws.close();
-            return;
-          }
-          settled = true;
-          clearTimeout(timeout);
-          this.setMode('online');
-          this.startPingLoop();
-          resolve('online');
-        };
+  private publishRelayPublicListing(clear = false): void {
+    if (!this.relay || !this.currentRoom || !this.isRelayHost) return;
+    if (this.currentRoom.visibility !== 'public') return;
+    const topic = `${RELAY_PREFIX}/public/${this.currentRoom.code}`;
+    if (clear) {
+      this.relay.publish(topic, '', true);
+      return;
+    }
+    const summary: PublicRoomSummary & { updatedAt: number } = {
+      code: this.currentRoom.code,
+      name: this.currentRoom.name,
+      hostName: this.currentRoom.hostName,
+      chapter: this.currentRoom.chapter,
+      difficulty: this.currentRoom.difficulty,
+      playerCount: this.currentRoom.players.length,
+      maxPlayers: this.currentRoom.maxPlayers,
+      status: this.currentRoom.status,
+      allowLobbyVote: this.currentRoom.allowLobbyVote,
+      updatedAt: Date.now(),
+    };
+    this.relay.publish(topic, summary, true);
+  }
 
-        ws.onmessage = (ev) => {
-          this.handleRawMessage(String(ev.data || ''));
-        };
-
-        ws.onerror = () => {
-          clearTimeout(timeout);
-          fallbackToLocal();
-        };
-
-        ws.onclose = () => {
-          clearTimeout(timeout);
-          if (!settled) {
-            fallbackToLocal();
-            return;
-          }
-          this.stopPingLoop();
-          this.ws = null;
-          if (this.mode === 'online') {
-            this.setMode('local');
-          }
-        };
-      } catch {
-        clearTimeout(timeout);
-        fallbackToLocal();
-      }
+  private broadcastRelayRoom(payload: Record<string, unknown>): boolean {
+    if (!this.relay || !this.relayRoomTopic) return false;
+    return this.relay.publish(this.relayRoomTopic, {
+      ...payload,
+      senderId: this.playerId,
+      ts: Date.now(),
     });
   }
 
+  private handleRelayMessage(topic: string, rawPayload: string): void {
+    const publicPrefix = `${RELAY_PREFIX}/public/`;
+    if (topic.startsWith(publicPrefix)) {
+      const code = topic.slice(publicPrefix.length).trim().toUpperCase();
+      if (!rawPayload || rawPayload.trim() === '') {
+        this.relayPublicRooms.delete(code);
+        return;
+      }
+      try {
+        const summary = JSON.parse(rawPayload) as PublicRoomSummary & { updatedAt?: number };
+        if (summary && summary.code && summary.status === 'lobby') {
+          this.relayPublicRooms.set(summary.code, {
+            ...summary,
+            updatedAt: Number(summary.updatedAt) || Date.now(),
+          });
+        } else {
+          this.relayPublicRooms.delete(code);
+        }
+      } catch {
+        // ignore malformed listing
+      }
+      return;
+    }
+
+    if (!this.relayRoomTopic || topic !== this.relayRoomTopic) return;
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(rawPayload) as Record<string, unknown>;
+    } catch {
+      return;
+    }
+    const senderId = typeof msg.senderId === 'string' ? msg.senderId : '';
+    if (senderId && senderId === this.playerId) return;
+
+    const type = String(msg.type || '');
+    const now = Date.now();
+
+    if (type === 'join_req' && this.isRelayHost && this.currentRoom) {
+      const reqPlayer = msg.player as JoinRoomParams | undefined;
+      const reqId = String(msg.reqPlayerId || '');
+      if (!reqPlayer || !reqId) return;
+      if (this.currentRoom.status !== 'lobby') {
+        this.broadcastRelayRoom({ type: 'join_nak', targetId: reqId, error: 'Partida já iniciada.' });
+        return;
+      }
+      if (this.currentRoom.players.length >= this.currentRoom.maxPlayers) {
+        this.broadcastRelayRoom({ type: 'join_nak', targetId: reqId, error: 'Sala cheia.' });
+        return;
+      }
+      const existing = this.currentRoom.players.find((p) => p.id === reqId);
+      if (!existing) {
+        const newPlayer: RoomSnapshot['players'][number] = {
+          id: reqId,
+          nickname: (reqPlayer.nickname || 'Sobrevivente').trim().slice(0, 24) || 'Sobrevivente',
+          platform: reqPlayer.platform ?? 'pc',
+          perks: reqPlayer.perks ? [...reqPlayer.perks] : [],
+          avatarId: reqPlayer.avatarId,
+          ready: false,
+          isHost: false,
+          captured: false,
+          spectating: false,
+          alive: true,
+          x: 0,
+          y: 0,
+          z: 0,
+          yaw: 0,
+          pitch: 0,
+          crouching: false,
+          flashlightOn: true,
+          uvOn: false,
+          heldItem: 'flashlight',
+          lastUpdateAt: now,
+        };
+        this.currentRoom = {
+          ...this.currentRoom,
+          players: [...this.currentRoom.players, newPlayer],
+        };
+      }
+      this.publishRelayPublicListing(false);
+      this.emit('room_update', this.currentRoom);
+      this.broadcastRelayRoom({ type: 'join_ack', targetId: reqId, room: this.currentRoom });
+      this.broadcastRelayRoom({ type: 'room_snapshot', room: this.currentRoom });
+      return;
+    }
+
+    if (type === 'join_ack' && String(msg.targetId || '') === this.playerId && msg.room) {
+      this.currentRoom = msg.room as RoomSnapshot;
+      this.emit('room_update', this.currentRoom);
+      if (this.pendingJoinResolve) {
+        const fn = this.pendingJoinResolve;
+        this.pendingJoinResolve = null;
+        fn({ ok: true, room: this.currentRoom, playerId: this.playerId ?? undefined });
+      }
+      return;
+    }
+
+    if (type === 'join_nak' && String(msg.targetId || '') === this.playerId) {
+      if (this.pendingJoinResolve) {
+        const fn = this.pendingJoinResolve;
+        this.pendingJoinResolve = null;
+        fn({ ok: false, error: String(msg.error || 'Não foi possível entrar na sala.') });
+      }
+      return;
+    }
+
+    if (type === 'room_snapshot' && msg.room) {
+      this.currentRoom = msg.room as RoomSnapshot;
+      this.emit('room_update', this.currentRoom);
+      return;
+    }
+
+    if (type === 'toggle_ready' && this.isRelayHost && this.currentRoom && senderId) {
+      const players = this.currentRoom.players.map((p) =>
+        p.id === senderId ? { ...p, ready: typeof msg.ready === 'boolean' ? msg.ready : !p.ready } : p
+      );
+      this.currentRoom = { ...this.currentRoom, players };
+      this.emit('room_update', this.currentRoom);
+      this.broadcastRelayRoom({ type: 'room_snapshot', room: this.currentRoom });
+      return;
+    }
+
+    if (type === 'cast_vote' && this.isRelayHost && this.currentRoom && this.currentRoom.allowLobbyVote) {
+      this.currentRoom = {
+        ...this.currentRoom,
+        chapter: typeof msg.chapter === 'number' ? msg.chapter : this.currentRoom.chapter,
+        difficulty: (msg.difficulty as Difficulty) ?? this.currentRoom.difficulty,
+      };
+      this.publishRelayPublicListing(false);
+      this.emit('room_update', this.currentRoom);
+      this.broadcastRelayRoom({ type: 'room_snapshot', room: this.currentRoom });
+      return;
+    }
+
+    if (type === 'leave_room' && this.isRelayHost && this.currentRoom && senderId) {
+      this.peerBuffers.delete(senderId);
+      this.currentRoom = {
+        ...this.currentRoom,
+        players: this.currentRoom.players.filter((p) => p.id !== senderId),
+      };
+      this.publishRelayPublicListing(false);
+      this.emit('room_update', this.currentRoom);
+      this.broadcastRelayRoom({ type: 'room_snapshot', room: this.currentRoom });
+      return;
+    }
+
+    if (type === 'chat' && msg.message) {
+      const chatMsg = msg.message as RoomChatMessage;
+      if (this.currentRoom) {
+        this.currentRoom = {
+          ...this.currentRoom,
+          chat: [...this.currentRoom.chat.slice(-59), chatMsg],
+        };
+      }
+      this.emit('chat_message', chatMsg);
+      return;
+    }
+
+    if (type === 'match_started' && msg.room) {
+      this.currentRoom = msg.room as RoomSnapshot;
+      this.emit('match_started', { room: this.currentRoom, seed: Number(msg.seed) || this.currentRoom.seed });
+      return;
+    }
+
+    if (type === 'player_state' && senderId) {
+      let buf = this.peerBuffers.get(senderId);
+      if (!buf) {
+        buf = new PeerInterpolationBuffer(INTERP_DELAY_MS);
+        this.peerBuffers.set(senderId, buf);
+      }
+      buf.push({
+        timestamp: Number(msg.ts) || now,
+        x: Number(msg.x) || 0,
+        y: Number(msg.y) || 0,
+        z: Number(msg.z) || 0,
+        yaw: Number(msg.yaw) || 0,
+        pitch: Number(msg.pitch) || 0,
+        crouching: Boolean(msg.crouching),
+        flashlightOn: Boolean(msg.flashlightOn),
+        uvOn: Boolean(msg.uvOn),
+        heldItem: typeof msg.heldItem === 'string' ? msg.heldItem : null,
+        captured: Boolean(msg.captured),
+        spectating: Boolean(msg.spectating),
+        alive: msg.alive !== false,
+      });
+      return;
+    }
+
+    if (type === 'sync_door') this.emit('door_synced', msg);
+    else if (type === 'sync_item') this.emit('item_synced', msg);
+    else if (type === 'sync_generator') this.emit('generator_synced', msg);
+    else if (type === 'sync_ping') this.emit('ping_synced', msg);
+    else if (type === 'capture_player') this.emit('player_captured', msg);
+    else if (type === 'rescue_player') this.emit('player_rescued', msg);
+  }
+
   disconnect(): void {
+    this.leaveRoom();
     this.cleanupSocket();
-    this.currentRoom = null;
-    this.playerId = null;
+    this.relayUnsubMsg?.();
+    this.relayUnsubMsg = null;
+    this.relay?.disconnect();
+    this.relay = null;
+    this.transport = 'none';
     this.peerBuffers.clear();
     this.pingMs = null;
     this.setMode('disconnected');
@@ -584,7 +871,8 @@ export class MultiplayerClient {
   }
 
   async listPublicRooms(): Promise<{ rooms: PublicRoomSummary[]; mode: 'online' | 'local' }> {
-    if (typeof fetch === 'function') {
+    const connMode = await this.connect();
+    if (connMode === 'online' && this.transport === 'server' && typeof fetch === 'function') {
       try {
         const resp = await fetch(`${this.apiBase}/api/rooms`, {
           headers: { Accept: 'application/json' },
@@ -597,8 +885,25 @@ export class MultiplayerClient {
           }
         }
       } catch {
-        // Fall through to local mode
+        // Fall through
       }
+    }
+    if (connMode === 'online' && this.transport === 'relay') {
+      // Give retained public room listings a brief moment on first connect
+      if (this.relayPublicRooms.size === 0) {
+        await new Promise((r) => setTimeout(r, 320));
+      }
+      const cutoff = Date.now() - 25000;
+      const live: PublicRoomSummary[] = [];
+      for (const [code, entry] of this.relayPublicRooms.entries()) {
+        if (entry.updatedAt < cutoff || entry.status !== 'lobby') {
+          this.relayPublicRooms.delete(code);
+          continue;
+        }
+        const { updatedAt: _u, ...summary } = entry;
+        live.push(summary);
+      }
+      return { rooms: live, mode: 'online' };
     }
     return { rooms: [], mode: 'local' };
   }
@@ -611,7 +916,7 @@ export class MultiplayerClient {
     error?: string;
   }> {
     const connMode = await this.connect();
-    if (connMode === 'online') {
+    if (connMode === 'online' && this.transport === 'server') {
       const res = await new Promise<{
         ok: boolean;
         room?: RoomSnapshot;
@@ -631,15 +936,15 @@ export class MultiplayerClient {
       return { ...res, mode: 'online' };
     }
 
-    // Graceful local-lobby fallback (static hosting / offline)
     const code = generateLocalRoomCode();
-    const playerId = `local_host_${Math.random().toString(36).slice(2, 8)}`;
+    const isRelay = connMode === 'online' && this.transport === 'relay';
+    const playerId = `${isRelay ? 'p' : 'local'}_${Math.random().toString(36).slice(2, 10)}`;
     const now = Date.now();
     const hostName = (params.hostName || 'Sobrevivente').trim().slice(0, 24) || 'Sobrevivente';
     const maxPlayers = Math.max(2, Math.min(5, Math.round(params.maxPlayers ?? 4)));
-    const localRoom: RoomSnapshot = {
+    const room: RoomSnapshot = {
       code,
-      name: (params.name || `Sala Local · ${hostName}`).trim().slice(0, 36),
+      name: (params.name || `Sala · ${hostName}`).trim().slice(0, 36),
       hostId: playerId,
       hostName,
       chapter: params.chapter ?? 1,
@@ -679,10 +984,26 @@ export class MultiplayerClient {
       generator: { powered: false, fuseInserted: false, progress: 0, updatedAt: now },
       pings: [],
     };
-    this.currentRoom = localRoom;
+    this.currentRoom = room;
     this.playerId = playerId;
-    this.emit('room_update', localRoom);
-    return { ok: true, room: localRoom, playerId, mode: 'local' };
+
+    if (isRelay && this.relay) {
+      this.isRelayHost = true;
+      this.relayRoomTopic = `${RELAY_PREFIX}/room/${code}`;
+      this.relay.subscribe(this.relayRoomTopic);
+      this.publishRelayPublicListing(false);
+      this.stopRelayHostHeartbeat();
+      this.relayHostHeartbeat = setInterval(() => {
+        if (this.currentRoom && this.currentRoom.status === 'lobby') {
+          this.publishRelayPublicListing(false);
+        }
+      }, 4500);
+      this.emit('room_update', room);
+      return { ok: true, room, playerId, mode: 'online' };
+    }
+
+    this.emit('room_update', room);
+    return { ok: true, room, playerId, mode: 'local' };
   }
 
   async joinRoom(
@@ -705,7 +1026,7 @@ export class MultiplayerClient {
     }
 
     const connMode = await this.connect();
-    if (connMode === 'online') {
+    if (connMode === 'online' && this.transport === 'server') {
       const res = await new Promise<{
         ok: boolean;
         room?: RoomSnapshot;
@@ -725,16 +1046,61 @@ export class MultiplayerClient {
       return { ...res, mode: 'online' };
     }
 
+    if (connMode === 'online' && this.transport === 'relay' && this.relay) {
+      const myId = `p_${Math.random().toString(36).slice(2, 10)}`;
+      this.playerId = myId;
+      this.isRelayHost = false;
+      this.relayRoomTopic = `${RELAY_PREFIX}/room/${cleanCode}`;
+      this.relay.subscribe(this.relayRoomTopic);
+
+      const res = await new Promise<{
+        ok: boolean;
+        room?: RoomSnapshot;
+        playerId?: string;
+        error?: string;
+      }>((resolve) => {
+        const timer = setTimeout(() => {
+          this.pendingJoinResolve = null;
+          if (this.relayRoomTopic) {
+            this.relay?.unsubscribe(this.relayRoomTopic);
+            this.relayRoomTopic = null;
+          }
+          resolve({ ok: false, error: `Sala "${cleanCode}" não encontrada ou host offline.` });
+        }, 4200);
+        this.pendingJoinResolve = (r) => {
+          clearTimeout(timer);
+          resolve(r);
+        };
+        // Short delay so MQTT SUBSCRIBE completes before publishing join_req
+        setTimeout(() => {
+          this.broadcastRelayRoom({ type: 'join_req', reqPlayerId: myId, player });
+        }, 120);
+      });
+      return { ...res, mode: 'online' };
+    }
+
     return {
       ok: false,
       mode: 'local',
-      error: 'Servidor multiplayer offline/estático. Crie uma sala local ou conecte-se ao servidor.',
+      error: 'Sem conexão com a internet para entrar na sala online.',
     };
   }
 
   leaveRoom(): void {
-    if (this.mode === 'online') {
+    if (this.mode === 'online' && this.transport === 'server') {
       this.sendRaw({ type: 'leave_room' });
+    } else if (this.transport === 'relay') {
+      if (this.isRelayHost) {
+        this.publishRelayPublicListing(true);
+        this.stopRelayHostHeartbeat();
+      } else {
+        this.broadcastRelayRoom({ type: 'leave_room' });
+      }
+      if (this.relayRoomTopic) {
+        this.relay?.unsubscribe(this.relayRoomTopic);
+        this.relayRoomTopic = null;
+      }
+      this.isRelayHost = false;
     }
     this.currentRoom = null;
     this.playerId = null;
@@ -742,47 +1108,61 @@ export class MultiplayerClient {
   }
 
   toggleReady(ready?: boolean): void {
-    if (this.mode === 'online') {
+    if (this.mode === 'online' && this.transport === 'server') {
       this.sendRaw({ type: 'toggle_ready', ready });
       return;
     }
     if (this.currentRoom && this.playerId) {
+      const nextReady = typeof ready === 'boolean' ? ready : !this.currentRoom.players.find((p) => p.id === this.playerId)?.ready;
       const players = this.currentRoom.players.map((p) =>
-        p.id === this.playerId
-          ? { ...p, ready: typeof ready === 'boolean' ? ready : !p.ready }
-          : p,
+        p.id === this.playerId ? { ...p, ready: nextReady } : p,
       );
       this.currentRoom = { ...this.currentRoom, players };
       this.emit('room_update', this.currentRoom);
+      if (this.transport === 'relay') {
+        if (this.isRelayHost) {
+          this.broadcastRelayRoom({ type: 'room_snapshot', room: this.currentRoom });
+        } else {
+          this.broadcastRelayRoom({ type: 'toggle_ready', ready: nextReady });
+        }
+      }
     }
   }
 
   castVote(vote: { chapter?: number; difficulty?: Difficulty }): void {
-    if (this.mode === 'online') {
+    if (this.mode === 'online' && this.transport === 'server') {
       this.sendRaw({ type: 'cast_vote', ...vote });
       return;
     }
     if (this.currentRoom && this.currentRoom.allowLobbyVote) {
+      if (this.transport === 'relay' && !this.isRelayHost) {
+        this.broadcastRelayRoom({ type: 'cast_vote', ...vote });
+        return;
+      }
       this.currentRoom = {
         ...this.currentRoom,
         chapter: vote.chapter ?? this.currentRoom.chapter,
         difficulty: vote.difficulty ?? this.currentRoom.difficulty,
       };
       this.emit('room_update', this.currentRoom);
+      if (this.transport === 'relay' && this.isRelayHost) {
+        this.publishRelayPublicListing(false);
+        this.broadcastRelayRoom({ type: 'room_snapshot', room: this.currentRoom });
+      }
     }
   }
 
   sendChat(text: string): void {
     const clean = String(text || '').trim().slice(0, 240);
     if (!clean) return;
-    if (this.mode === 'online') {
+    if (this.mode === 'online' && this.transport === 'server') {
       this.sendRaw({ type: 'chat', text: clean });
       return;
     }
     if (this.currentRoom && this.playerId) {
       const me = this.currentRoom.players.find((p) => p.id === this.playerId);
       const msg: RoomChatMessage = {
-        id: `local_msg_${Date.now()}`,
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         senderId: this.playerId,
         senderName: me?.nickname || 'Sobrevivente',
         text: clean,
@@ -793,17 +1173,25 @@ export class MultiplayerClient {
         chat: [...this.currentRoom.chat.slice(-59), msg],
       };
       this.emit('chat_message', msg);
+      if (this.transport === 'relay') {
+        this.broadcastRelayRoom({ type: 'chat', message: msg });
+      }
     }
   }
 
   startMatch(seed?: number): void {
-    if (this.mode === 'online') {
+    if (this.mode === 'online' && this.transport === 'server') {
       this.sendRaw({ type: 'start_match', seed });
       return;
     }
     if (this.currentRoom) {
       const nextSeed = typeof seed === 'number' ? seed : this.currentRoom.seed;
       this.currentRoom = { ...this.currentRoom, status: 'playing', seed: nextSeed };
+      if (this.transport === 'relay' && this.isRelayHost) {
+        this.publishRelayPublicListing(true);
+        this.stopRelayHostHeartbeat();
+        this.broadcastRelayRoom({ type: 'match_started', room: this.currentRoom, seed: nextSeed });
+      }
       this.emit('match_started', { room: this.currentRoom, seed: nextSeed });
     }
   }
@@ -820,6 +1208,9 @@ export class MultiplayerClient {
     }
     this.lastStateSentAt = nowMs;
     if (this.mode !== 'online') return false;
+    if (this.transport === 'relay') {
+      return this.broadcastRelayRoom({ type: 'player_state', ...state });
+    }
     return this.sendRaw({
       type: 'player_state',
       ...state,
@@ -841,24 +1232,24 @@ export class MultiplayerClient {
   }
 
   syncDoor(doorId: string, open: boolean, locked?: boolean): void {
-    if (this.mode === 'online') {
-      this.sendRaw({ type: 'sync_door', doorId, open, locked });
-    }
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'sync_door', doorId, open, locked });
+    else this.sendRaw({ type: 'sync_door', doorId, open, locked });
   }
 
   syncItem(
     itemId: string,
     state: { collected: boolean; holderId?: string | null; x?: number; y?: number; z?: number },
   ): void {
-    if (this.mode === 'online') {
-      this.sendRaw({ type: 'sync_item', itemId, ...state });
-    }
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'sync_item', itemId, ...state });
+    else this.sendRaw({ type: 'sync_item', itemId, ...state });
   }
 
   syncGenerator(state: { powered?: boolean; fuseInserted?: boolean; progress?: number }): void {
-    if (this.mode === 'online') {
-      this.sendRaw({ type: 'sync_generator', ...state });
-    }
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'sync_generator', ...state });
+    else this.sendRaw({ type: 'sync_generator', ...state });
   }
 
   syncPing(ping: {
@@ -867,21 +1258,21 @@ export class MultiplayerClient {
     y: number;
     z: number;
   }): void {
-    if (this.mode === 'online') {
-      this.sendRaw({ type: 'sync_ping', ...ping });
-    }
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'sync_ping', ...ping });
+    else this.sendRaw({ type: 'sync_ping', ...ping });
   }
 
   capturePlayer(targetPlayerId: string): void {
-    if (this.mode === 'online') {
-      this.sendRaw({ type: 'capture_player', targetPlayerId });
-    }
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'capture_player', targetPlayerId });
+    else this.sendRaw({ type: 'capture_player', targetPlayerId });
   }
 
   rescuePlayer(targetPlayerId: string): void {
-    if (this.mode === 'online') {
-      this.sendRaw({ type: 'rescue_player', targetPlayerId });
-    }
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'rescue_player', targetPlayerId });
+    else this.sendRaw({ type: 'rescue_player', targetPlayerId });
   }
 }
 
