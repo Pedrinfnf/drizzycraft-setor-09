@@ -148,6 +148,7 @@ export class GameServer {
           id: d.id,
           isOpen: d.isOpen,
           isUnlocked: d.isUnlocked,
+          locked: !d.isUnlocked,
           planksRemoved: Boolean(d.planksRemoved),
           electronicUnlocked: Boolean(d.electronicUnlocked),
         };
@@ -778,11 +779,15 @@ export class GameServer {
           if (!ds.electronicUnlocked) return { ok: false, code: 'NEEDS_SAFE_CODE' };
           if (!ds.isUnlocked) {
             if (!p.inventory.includes('master_key')) return { ok: false, code: 'NEEDS_MASTER_KEY' };
+            // Consume master_key once and unlock exit permanently
+            p.inventory = p.inventory.filter((it) => it !== 'master_key');
             ds.isUnlocked = true;
+            ds.locked = false;
             ds.isOpen = true;
             ld.isUnlocked = true;
             ld.isOpen = true;
             this.dirtyDoors.add(ld.id);
+            this.dirtyPlayers.add(p.id);
           }
           const ending: EndingId =
             this.state.terminalUnlocked && (this.state.translationBoardSeen || this.state.discoveredUvMarkIds.length > 0)
@@ -792,7 +797,7 @@ export class GameServer {
           return { ok: true, code: 'ESCAPED' };
         }
 
-        if (!ds.isUnlocked) {
+        if (!ds.isUnlocked || ds.locked) {
           const req = ld.lockType;
           const hasTool =
             (req === 'red_key' && p.inventory.includes('red_key')) ||
@@ -801,15 +806,37 @@ export class GameServer {
             (req === 'crowbar_planks' && p.inventory.includes('crowbar')) ||
             (req === 'wire_cutters' && p.inventory.includes('wire_cutters'));
           if (!hasTool) return { ok: false, code: 'LOCKED' };
-          ds.isUnlocked = true;
-          ds.isOpen = true;
-          ld.isUnlocked = true;
-          ld.isOpen = true;
-          this.dirtyDoors.add(ld.id);
+
+          // Single-use key consumption: keys are consumed ONCE and unlock permanently (tools like crowbar/wire_cutters stay)
+          const isConsumableKey = req === 'red_key' || req === 'blue_key' || req === 'basement_key';
+          if (isConsumableKey) {
+            p.inventory = p.inventory.filter((it) => it !== req);
+            this.dirtyPlayers.add(p.id);
+          }
+
+          // Unlocking with basement_key permanently opens both West & East basement gates so no softlock occurs
+          const targets =
+            req === 'basement_key'
+              ? this.layout.doors.filter((d) => d.lockType === 'basement_key')
+              : [ld];
+          for (const td of targets) {
+            const tds = this.state.doors[td.id];
+            if (tds) {
+              tds.isUnlocked = true;
+              tds.locked = false;
+              tds.isOpen = true;
+              this.dirtyDoors.add(td.id);
+            }
+            td.isUnlocked = true;
+            td.isOpen = true;
+          }
           this.emitEvent({ tick: this.state.tick, type: 'door_changed', playerId: p.id, targetId: ld.id });
           return { ok: true, code: 'UNLOCKED' };
         }
 
+        // Once unlocked, door NEVER re-locks — toggles open/closed freely for all players
+        ds.isUnlocked = true;
+        ds.locked = false;
         ds.isOpen = !ds.isOpen;
         ld.isOpen = ds.isOpen;
         this.dirtyDoors.add(ld.id);

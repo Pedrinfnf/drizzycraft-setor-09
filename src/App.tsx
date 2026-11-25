@@ -35,6 +35,7 @@ import { saveSystem, type ProgressionStateV4 } from './game/saveSystem';
 import { cloudSync, type CloudSyncState } from './game/cloudSync';
 import { voiceDubbing } from './game/voiceDubbing';
 import { multiplayerClient } from './network/MultiplayerClient';
+import { proximityVoice, type VoiceSignalPayload } from './network/ProximityVoice';
 import type { CharacterPortraitId } from './game/portraitRenderer';
 import type {
   AchievementToastPayload,
@@ -135,7 +136,7 @@ const INITIAL_HUD: HudSnapshot = {
 
 function tryRequestMobileFullscreenLandscape(): void {
   try {
-    if (typeof window === 'undefined' || !('ontouchstart' in window || navigator.maxTouchPoints > 0)) {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
       return;
     }
     const el = document.documentElement as HTMLElement & {
@@ -147,12 +148,31 @@ function tryRequestMobileFullscreenLandscape(): void {
         (req as Promise<void>).catch(() => undefined);
       }
     }
+    const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
     const orient = screen.orientation as (ScreenOrientation & { lock?: (o: string) => Promise<void> }) | undefined;
-    if (orient?.lock) {
+    if (isTouchDevice && orient?.lock) {
       orient.lock('landscape').catch(() => undefined);
     }
   } catch {
     // Graceful no-op on restricted browsers / iFrames
+  }
+}
+
+function toggleFullscreenSmart(): void {
+  try {
+    if (typeof document === 'undefined') return;
+    if (document.fullscreenElement) {
+      const exit =
+        document.exitFullscreen?.() ??
+        (document as Document & { webkitExitFullscreen?: () => Promise<void> | void }).webkitExitFullscreen?.();
+      if (exit && typeof (exit as Promise<void>).catch === 'function') {
+        (exit as Promise<void>).catch(() => undefined);
+      }
+    } else {
+      tryRequestMobileFullscreenLandscape();
+    }
+  } catch {
+    // ignore
   }
 }
 
@@ -181,6 +201,11 @@ export default function App() {
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => authClient.getSession());
   const [cloudSyncStatus, setCloudSyncStatus] = useState<CloudSyncState>(() => cloudSync.getStatus());
   const [activeMpRoom, setActiveMpRoom] = useState<string | null>(null);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(
+    () => typeof document !== 'undefined' && Boolean(document.fullscreenElement)
+  );
+  const [micEnabled, setMicEnabled] = useState(false);
+  const [mutedVoicePeers, setMutedVoicePeers] = useState<string[]>([]);
   const [itemRenders, setItemRenders] = useState<Record<string, string>>({});
   const [toastQueue, setToastQueue] = useState<AchievementToastPayload[]>([]);
   const [hudEditorOpen, setHudEditorOpen] = useState(false);
@@ -192,16 +217,21 @@ export default function App() {
     () => typeof window !== 'undefined' && window.innerHeight > window.innerWidth
   );
 
-  // Track orientation changes for non-blocking mobile portrait hint
+  // Track orientation & fullscreen changes for smart fullscreen toggle
   useEffect(() => {
     const onResize = () => {
       setIsPortrait(window.innerHeight > window.innerWidth);
     };
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', onResize);
+    document.addEventListener('fullscreenchange', onFsChange);
     return () => {
       window.removeEventListener('resize', onResize);
       window.removeEventListener('orientationchange', onResize);
+      document.removeEventListener('fullscreenchange', onFsChange);
     };
   }, []);
 
@@ -347,10 +377,12 @@ export default function App() {
     });
   }, [settings.locale, settings.audio.master, settings.audio.voiceTapes, settings.audio.muted]);
 
-  // 30-35Hz Multiplayer Crossplay Sync Loop + Compact Delta / Self-Heal / Host Migration
+  // 30-35Hz Multiplayer Crossplay Sync Loop + Authoritative P. Drizzy/Door/Item Sync + Proximity Voice Chat
   useEffect(() => {
     if (!activeMpRoom || hud.mode !== 'playing') {
       engineRef.current?.setMultiplayerPeers([], null, false);
+      proximityVoice.stop();
+      setMicEnabled(false);
       return;
     }
     const eng = engineRef.current;
@@ -359,6 +391,68 @@ export default function App() {
       srv.onBroadcastDelta = (delta) => multiplayerClient.broadcastCompactDelta(delta);
       srv.onSelfHealSnapshot = (snap) => multiplayerClient.broadcastSelfHealSnapshot(snap);
     }
+
+    // Immediate discrete world sync whenever any player unlocks/toggles doors, picks up items, or fixes generator
+    if (eng) {
+      eng.onWorldSyncEvent = (ev) => {
+        if (ev.kind === 'door') {
+          multiplayerClient.syncDoor(
+            String(ev.payload.doorId || ''),
+            Boolean(ev.payload.open),
+            Boolean(ev.payload.locked)
+          );
+        } else if (ev.kind === 'item') {
+          multiplayerClient.syncItem(String(ev.payload.itemId || ''), {
+            collected: Boolean(ev.payload.collected),
+            x: typeof ev.payload.x === 'number' ? ev.payload.x : undefined,
+            y: typeof ev.payload.y === 'number' ? ev.payload.y : undefined,
+            z: typeof ev.payload.z === 'number' ? ev.payload.z : undefined,
+          });
+        } else if (ev.kind === 'generator') {
+          multiplayerClient.syncGenerator({
+            powered: Boolean(ev.payload.powered),
+            fuseInserted: Boolean(ev.payload.fuseInserted),
+          });
+        }
+      };
+    }
+
+    // Start Proximity Voice Chat (WebRTC + STUN + WSS signaling)
+    const localVoiceId = multiplayerClient.playerId || `p_${Date.now()}`;
+    void proximityVoice.start(
+      localVoiceId,
+      (targetPeerId, sig) => multiplayerClient.sendVoiceSignal(targetPeerId, sig),
+      false
+    );
+
+    const unsubVoice = multiplayerClient.on('voice_signal', (payload) => {
+      const p = payload as { fromPeerId?: string; signal?: VoiceSignalPayload };
+      if (p.fromPeerId && p.signal) {
+        void proximityVoice.handleSignal(p.fromPeerId, p.signal);
+      }
+    });
+    const unsubDoor = multiplayerClient.on('door_synced', (payload) => {
+      const p = payload as { doorId?: string; open?: boolean; locked?: boolean };
+      if (p.doorId) {
+        engineRef.current?.applyRemoteDoorToggle(p.doorId, Boolean(p.open), !p.locked);
+      }
+    });
+    const unsubItem = multiplayerClient.on('item_synced', (payload) => {
+      const p = payload as { itemId?: string; collected?: boolean; x?: number; y?: number; z?: number };
+      if (p.itemId) {
+        engineRef.current?.applyRemoteItemSync(p.itemId, Boolean(p.collected), {
+          x: p.x,
+          y: p.y,
+          z: p.z,
+        });
+      }
+    });
+    const unsubGen = multiplayerClient.on('generator_synced', (payload) => {
+      const p = payload as { powered?: boolean };
+      if (p.powered) {
+        engineRef.current?.applyRemoteGeneratorFixed();
+      }
+    });
     const unsubDelta = multiplayerClient.on('compact_delta', (d) => {
       engineRef.current?.applyCompactDelta(d as never);
     });
@@ -374,48 +468,101 @@ export default function App() {
       }
     });
 
+    let tickCount = 0;
     const timer = window.setInterval(() => {
       const curEng = engineRef.current;
       if (!curEng) return;
+      tickCount++;
       const local = curEng.getLocalPlayerSyncState();
+      const myNick = authSession?.user.nickname || 'Agente-09';
+      const myPlat = hud.inputMode;
+      const isSpeakingNow = proximityVoice.isLocalSpeaking();
+
       multiplayerClient.sendPlayerState({
         x: local.x,
         y: local.y,
         z: local.z,
         yaw: local.yaw,
-        pitch: 0,
+        pitch: local.pitch,
         crouching: local.crouching,
+        sprinting: local.sprinting,
+        speaking: isSpeakingNow,
         flashlightOn: local.flashlightOn,
-        uvOn: false,
-        heldItem: null,
-        captured: false,
-        spectating: false,
+        uvOn: local.uvOn,
+        heldItem: local.heldItem,
+        captured: local.captured,
+        spectating: local.captured,
         alive: local.alive,
+        nickname: myNick,
+        platform: myPlat,
       });
+
+      // Authoritative Host broadcasts P. Drizzy at 30Hz & full world snapshot every 2.0s (Zero Parallel World!)
+      const isHostNow =
+        multiplayerClient.currentRoom?.hostId === multiplayerClient.playerId ||
+        Boolean(curEng.getAuthoritativeServer());
+      if (isHostNow) {
+        multiplayerClient.broadcastCompactDelta(curEng.getAuthoritativeWorldDelta());
+        if (tickCount % 60 === 0) {
+          multiplayerClient.broadcastSelfHealSnapshot(curEng.exportAuthoritativeFullSnapshot());
+        }
+      }
+
       const sampledMap = multiplayerClient.getAllInterpolatedPeers(Date.now());
-      const peers = Object.entries(sampledMap).map(([id, snap]) => ({
-        id,
-        x: snap.x,
-        y: snap.y,
-        z: snap.z,
-        yaw: snap.yaw,
-        floor: (snap.y < -1.5 ? -1 : 0) as 0 | -1,
-        alive: snap.alive,
-      }));
+      const roomPlayers = multiplayerClient.currentRoom?.players ?? [];
+      const voicePosMap: Record<string, { x: number; y: number; z: number }> = {};
+      const peers = Object.entries(sampledMap).map(([id, snap]) => {
+        const meta = roomPlayers.find((rp) => rp.id === id);
+        voicePosMap[id] = { x: snap.x, y: snap.y, z: snap.z };
+        return {
+          id,
+          x: snap.x,
+          y: snap.y,
+          z: snap.z,
+          yaw: snap.yaw,
+          pitch: snap.pitch,
+          floor: (snap.y < -1.5 ? -1 : 0) as 0 | -1,
+          alive: snap.alive !== false,
+          crouching: Boolean(snap.crouching),
+          sprinting: Boolean(snap.sprinting),
+          speaking: Boolean(snap.speaking),
+          captured: Boolean(snap.captured),
+          flashlightOn: snap.flashlightOn !== false,
+          uvOn: Boolean(snap.uvOn),
+          heldItem: snap.heldItem ?? null,
+          nickname: snap.nickname || meta?.nickname || 'Aliado',
+          platform: snap.platform || meta?.platform || 'pc',
+        };
+      });
       curEng.setMultiplayerPeers(peers, multiplayerClient.pingMs, false);
+
+      // Keep WebRTC mesh connected & update 3D spatial GainNode + StereoPannerNode
+      const peerIds = roomPlayers.map((rp) => rp.id);
+      if (tickCount % 15 === 1) {
+        proximityVoice.syncPeers(peerIds);
+      }
+      proximityVoice.updateSpatialPositions(
+        { x: local.x, y: local.y, z: local.z, yaw: local.yaw },
+        voicePosMap
+      );
     }, 33);
 
     return () => {
       window.clearInterval(timer);
+      unsubVoice();
+      unsubDoor();
+      unsubItem();
+      unsubGen();
       unsubDelta();
       unsubHeal();
       unsubHost();
+      if (eng) eng.onWorldSyncEvent = null;
       if (srv) {
         srv.onBroadcastDelta = null;
         srv.onSelfHealSnapshot = null;
       }
     };
-  }, [activeMpRoom, hud.mode]);
+  }, [activeMpRoom, hud.mode, authSession?.user.nickname, hud.inputMode]);
 
   // Pause heavy 3D background world loop while full-screen menus (Store / Account / MP Hub) are open
   useEffect(() => {
@@ -936,6 +1083,26 @@ export default function App() {
             }}
             onOpenSettings={() => setSettingsOpen(true)}
             onToggleMute={handleToggleMute}
+            isFullscreen={isFullscreen}
+            onToggleFullscreen={toggleFullscreenSmart}
+            mpActive={Boolean(activeMpRoom)}
+            micEnabled={micEnabled}
+            onToggleMic={() => {
+              void proximityVoice.setMicEnabled(!micEnabled).then((ok) => {
+                setMicEnabled(ok && !micEnabled);
+              });
+            }}
+            voicePeers={(multiplayerClient.currentRoom?.players ?? [])
+              .filter((p) => p.id !== multiplayerClient.playerId)
+              .map((p) => ({ id: p.id, nickname: p.nickname }))}
+            mutedVoicePeers={mutedVoicePeers}
+            onToggleMutePeer={(peerId) => {
+              const nextMuted = !mutedVoicePeers.includes(peerId);
+              proximityVoice.setPeerMuted(peerId, nextMuted);
+              setMutedVoicePeers((prev) =>
+                nextMuted ? [...prev, peerId] : prev.filter((id) => id !== peerId)
+              );
+            }}
             onPause={() => engineRef.current?.pauseGame()}
             onSelectSlot={(idx) => engineRef.current?.selectHotbarSlot(idx)}
             onDropActiveItem={() => engineRef.current?.dropInventoryItem()}
@@ -1135,6 +1302,8 @@ export default function App() {
             setSettingsOpen(false);
             setHudEditorOpen(true);
           }}
+          isFullscreen={isFullscreen}
+          onToggleFullscreen={toggleFullscreenSmart}
           onClose={() => setSettingsOpen(false)}
         />
       )}

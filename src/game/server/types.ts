@@ -103,6 +103,8 @@ export interface DoorServerState {
   id: string;
   isOpen: boolean;
   isUnlocked: boolean;
+  /** Explicit inverse of isUnlocked so locked/open are always tracked independently */
+  locked: boolean;
   planksRemoved: boolean;
   electronicUnlocked: boolean;
 }

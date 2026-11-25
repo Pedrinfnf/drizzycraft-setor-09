@@ -17,6 +17,7 @@ import {
   FLOOR_MINUS_1_Y,
   GRID_H,
   GRID_W,
+  STAIRWAYS,
   cellIdx,
   getStairHeightAt,
   gridToWorld,
@@ -25,9 +26,226 @@ import {
   isDoorBlockingCell,
   isSightlineBlockedByFurniture,
   resolveWorldMovement,
+  segmentIntersectsAabb2D,
   worldToGrid,
   type MansionLayout,
 } from './mansionMap';
+
+/**
+ * Stairway link definitions derived directly from STAIRWAYS in mansionMap.ts,
+ * connecting Ground Floor (y=0) <-> Underground (y=-4.0) via intermediate ramp nodes
+ * for both dual-floor navigation & real 3D floor-aware proximity.
+ */
+export interface StairwayLink {
+  id: string;
+  topX: number;
+  topZ: number;
+  midX: number;
+  midZ: number;
+  bottomX: number;
+  bottomZ: number;
+  rampTravelMeters: number;
+}
+
+export const STAIRWAY_LINKS: readonly StairwayLink[] = STAIRWAYS.map((st) => {
+  const cx = gridToWorld((st.gxMin + st.gxMax) * 0.5);
+  const topZ = gridToWorld(st.gzTop + 0.5);
+  const botZ = gridToWorld(st.gzBottom - 0.5);
+  const midZ = (topZ + botZ) * 0.5;
+  const runMeters = Math.abs(topZ - botZ);
+  const rampTravelMeters = Math.hypot(runMeters, Math.abs(FLOOR_0_Y - FLOOR_MINUS_1_Y)) + 1.5;
+  return {
+    id: st.id,
+    topX: cx,
+    topZ,
+    midX: cx,
+    midZ,
+    bottomX: cx,
+    bottomZ: botZ,
+    rampTravelMeters,
+  };
+});
+
+/**
+ * Real 3D floor-aware proximity distance used for Heartbeat, Terror Audio, Visual Cues & Voice Chat.
+ * - Same floor (|ay - by| < 2.2m): true 3D Euclidean distance.
+ * - Different floors (|ay - by| >= 2.2m): NEVER uses raw 2D (X,Z) distance — computes real walking
+ *   distance through the nearest StairwayLink (top <-> ramp <-> bottom) so P. Drizzy below you in the
+ *   basement NEVER triggers a false heartbeat / proximity warning through the ceiling!
+ */
+export function compute3DProximityDistance(
+  ax: number,
+  ay: number,
+  az: number,
+  bx: number,
+  by: number,
+  bz: number
+): number {
+  const dy = Math.abs(ay - by);
+  if (dy < 2.2) {
+    return Math.hypot(ax - bx, dy, az - bz);
+  }
+  const aIsUpper = ay > by;
+  let best = Infinity;
+  for (const st of STAIRWAY_LINKS) {
+    const aDist = aIsUpper
+      ? Math.hypot(ax - st.topX, az - st.topZ)
+      : Math.hypot(ax - st.bottomX, az - st.bottomZ);
+    const bDist = aIsUpper
+      ? Math.hypot(bx - st.bottomX, bz - st.bottomZ)
+      : Math.hypot(bx - st.topX, bz - st.topZ);
+    const total = aDist + st.rampTravelMeters + bDist;
+    if (total < best) best = total;
+  }
+  return best;
+}
+
+const CONTEXT_RAY_COUNT = 12;
+const CONTEXT_COS = Array.from({ length: CONTEXT_RAY_COUNT }, (_, i) =>
+  Math.cos((i * Math.PI * 2) / CONTEXT_RAY_COUNT)
+);
+const CONTEXT_SIN = Array.from({ length: CONTEXT_RAY_COUNT }, (_, i) =>
+  Math.sin((i * Math.PI * 2) / CONTEXT_RAY_COUNT)
+);
+
+/**
+ * 12-Whisker Context Steering at waist/knee height (0.45m–1.15m):
+ * Evaluates interest toward the desired target direction against obstacle danger from walls,
+ * door jambs, vents, and ALL solid furniture colliders (desks, tables, cabinets, sofas, counters).
+ * Allows smooth organic obstacle avoidance even during direct pursuit without getting snagged.
+ */
+export function computeContextSteeringDirection(
+  layout: MansionLayout,
+  x: number,
+  z: number,
+  floor: FloorId,
+  desiredDirX: number,
+  desiredDirZ: number,
+  whiskerRange = 1.85
+): { dirX: number; dirZ: number; blockedDirectly: boolean } {
+  const dLen = Math.hypot(desiredDirX, desiredDirZ);
+  if (dLen < 1e-5) return { dirX: 0, dirZ: 0, blockedDirectly: false };
+  const goalX = desiredDirX / dLen;
+  const goalZ = desiredDirZ / dLen;
+
+  const dangers = new Float32Array(CONTEXT_RAY_COUNT);
+  const sampleSteps = 5;
+
+  for (let i = 0; i < CONTEXT_RAY_COUNT; i++) {
+    const rx = CONTEXT_COS[i];
+    const rz = CONTEXT_SIN[i];
+    const ex = x + rx * whiskerRange;
+    const ez = z + rz * whiskerRange;
+
+    let maxDanger = 0;
+
+    // 1. Check grid walls, void, vents & closed locked doors along whisker
+    for (let s = 1; s <= sampleSteps; s++) {
+      const frac = s / sampleSteps;
+      const sx = x + rx * whiskerRange * frac;
+      const sz = z + rz * whiskerRange * frac;
+      const gx = worldToGrid(sx);
+      const gz = worldToGrid(sz);
+      if (isCellSolidForActor(layout, gx, gz, floor, true, false).solid) {
+        maxDanger = Math.max(maxDanger, 1.0 - (frac - 0.15) * 0.55);
+        break;
+      }
+    }
+
+    // 2. Check ALL solid furniture colliders at waist/knee height
+    const margin = 0.36;
+    for (let cIdx = 0; cIdx < layout.furnitureColliders.length; cIdx++) {
+      const c = layout.furnitureColliders[cIdx];
+      if (c.floor !== floor || c.height < 0.3) continue;
+      if (
+        segmentIntersectsAabb2D(
+          x,
+          z,
+          ex,
+          ez,
+          c.minX - margin,
+          c.maxX + margin,
+          c.minZ - margin,
+          c.maxZ + margin
+        )
+      ) {
+        const cx = (c.minX + c.maxX) * 0.5;
+        const cz = (c.minZ + c.maxZ) * 0.5;
+        const dObs = Math.hypot(cx - x, cz - z);
+        const prox = Math.max(0.45, Math.min(1.0, 1.25 - dObs / (whiskerRange + 0.8)));
+        maxDanger = Math.max(maxDanger, prox);
+      }
+    }
+
+    dangers[i] = maxDanger;
+  }
+
+  // Spread danger slightly to immediate neighbor rays so P. Drizzy gives furniture wide smooth clearance
+  const spreadDanger = new Float32Array(CONTEXT_RAY_COUNT);
+  for (let i = 0; i < CONTEXT_RAY_COUNT; i++) {
+    const prev = dangers[(i + CONTEXT_RAY_COUNT - 1) % CONTEXT_RAY_COUNT];
+    const next = dangers[(i + 1) % CONTEXT_RAY_COUNT];
+    spreadDanger[i] = Math.min(1, Math.max(dangers[i], prev * 0.42, next * 0.42));
+  }
+
+  // Check if direct forward ray toward goal is obstructed
+  let closestGoalIdx = 0;
+  let bestGoalDot = -2;
+  for (let i = 0; i < CONTEXT_RAY_COUNT; i++) {
+    const dot = CONTEXT_COS[i] * goalX + CONTEXT_SIN[i] * goalZ;
+    if (dot > bestGoalDot) {
+      bestGoalDot = dot;
+      closestGoalIdx = i;
+    }
+  }
+  const blockedDirectly = dangers[closestGoalIdx] > 0.35;
+
+  // Combine interest & danger into smooth steering vector.
+  // When directly blocked, pick the clearest flank (with deterministic tie-break so symmetric
+  // dead-center furniture obstacles NEVER cancel left+right into zero deflection!).
+  let sumX = 0;
+  let sumZ = 0;
+  let bestIdx = closestGoalIdx;
+  let bestScore = -999;
+  const scores = new Float32Array(CONTEXT_RAY_COUNT);
+
+  for (let i = 0; i < CONTEXT_RAY_COUNT; i++) {
+    const dot = CONTEXT_COS[i] * goalX + CONTEXT_SIN[i] * goalZ;
+    const interest = Math.max(0, dot * 0.78 + 0.22);
+    const dangerPenalty = blockedDirectly ? Math.min(1, spreadDanger[i] * 1.05) : spreadDanger[i] * 0.96;
+    const score = interest * (1 - dangerPenalty) + i * 1e-4;
+    scores[i] = score;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+
+  if (blockedDirectly) {
+    // Blend ONLY rays aligned with the winning flank (prevents symmetric cancellation into obstacle!)
+    const bx = CONTEXT_COS[bestIdx];
+    const bz = CONTEXT_SIN[bestIdx];
+    for (let i = 0; i < CONTEXT_RAY_COUNT; i++) {
+      if (scores[i] > 0.08 && CONTEXT_COS[i] * bx + CONTEXT_SIN[i] * bz > 0.35) {
+        sumX += CONTEXT_COS[i] * scores[i];
+        sumZ += CONTEXT_SIN[i] * scores[i];
+      }
+    }
+  } else {
+    for (let i = 0; i < CONTEXT_RAY_COUNT; i++) {
+      if (scores[i] > 0.08) {
+        sumX += CONTEXT_COS[i] * scores[i];
+        sumZ += CONTEXT_SIN[i] * scores[i];
+      }
+    }
+  }
+
+  const outLen = Math.hypot(sumX, sumZ);
+  if (outLen > 0.05) {
+    return { dirX: sumX / outLen, dirZ: sumZ / outLen, blockedDirectly };
+  }
+  return { dirX: CONTEXT_COS[bestIdx], dirZ: CONTEXT_SIN[bestIdx], blockedDirectly };
+}
 
 interface AStarNode {
   gx: number;
@@ -358,6 +576,14 @@ export class DiddyAiController {
   private investigateTarget: PathNode | null = null;
   private investigateTimer = 0;
 
+  // Perceptual Reaction Delay (180ms–250ms), Angular Turn Limit & Momentum (NO instant lookAt or input reading!)
+  public readonly reactionDelaySec = 0.21;
+  private perceptionQueue: Array<{ time: number; node: PathNode }> = [];
+  private lkpSearchTimer = 0;
+  private lkpSearchBaseYaw = 0;
+  private vx = 0;
+  private vz = 0;
+
   private spottedHidingSpot: HidingSpotDefinition | null = null;
   private inspectingSpot: HidingSpotDefinition | null = null;
   private checkedHidingCooldowns = new Map<string, number>();
@@ -385,6 +611,11 @@ export class DiddyAiController {
     this.timeSinceSeenPlayer = 99;
     this.investigateTarget = null;
     this.investigateTimer = 0;
+    this.perceptionQueue = [];
+    this.lkpSearchTimer = 0;
+    this.lkpSearchBaseYaw = 0;
+    this.vx = 0;
+    this.vz = 0;
     this.spottedHidingSpot = null;
     this.inspectingSpot = null;
     this.checkedHidingCooldowns.clear();
@@ -393,6 +624,15 @@ export class DiddyAiController {
     this.hitCooldown = 0;
     this.breachAnimTimer = 0;
     this.stepDistAccum = 0;
+  }
+
+  /** Exposed for automated verification of organic reaction delay & LKP search */
+  getPerceivedTarget(): PathNode | null {
+    return this.lastKnownPlayerPos ? { ...this.lastKnownPlayerPos } : null;
+  }
+
+  isSearchingLkp(): boolean {
+    return this.lkpSearchTimer > 0;
   }
 
   /** Called by HorrorEngine when the Hold-Breath Minigame finishes (survived => P. Drizzy leaves safely!). */
@@ -446,7 +686,7 @@ export class DiddyAiController {
   }
 
   getDistanceTo(px: number, py: number, pz: number): number {
-    return Math.hypot(this.x - px, (this.y - py) * 1.5, this.z - pz);
+    return compute3DProximityDistance(this.x, this.y, this.z, px, py, pz);
   }
 
   private pickDistantPatrolIndex(layout: MansionLayout, avoidX: number, avoidZ: number): number {
@@ -564,15 +804,44 @@ export class DiddyAiController {
       }
       this.state = 'chase';
       this.inspectingSpot = null;
+      this.lkpSearchTimer = 0;
       this.timeSinceSeenPlayer = 0;
-      this.lastKnownPlayerPos = {
+
+      // Record observation into 210ms perceptual reaction delay queue (NO instant input reading!)
+      const obsNode: PathNode = {
         x: input.playerX,
         y: input.playerY,
         z: input.playerZ,
         floor: input.playerFloor,
       };
+      this.perceptionQueue.push({ time: input.elapsedSec, node: obsNode });
+      if (this.perceptionQueue.length > 32) this.perceptionQueue.shift();
+
+      // Only update steering target from observations older than reactionDelaySec (210ms)
+      // (First sighting initializes LKP immediately so chase begins promptly, while subsequent sudden jukes lag 210ms!)
+      if (!this.lastKnownPlayerPos) {
+        this.lastKnownPlayerPos = obsNode;
+      } else {
+        let delayed: PathNode | null = null;
+        while (
+          this.perceptionQueue.length > 0 &&
+          input.elapsedSec - this.perceptionQueue[0].time >= this.reactionDelaySec
+        ) {
+          delayed = this.perceptionQueue.shift()!.node;
+        }
+        if (delayed) {
+          this.lastKnownPlayerPos = delayed;
+        }
+      }
     } else {
       this.timeSinceSeenPlayer += dt;
+      // Drain remaining delayed perception samples up to the moment LOS was lost
+      while (
+        this.perceptionQueue.length > 0 &&
+        input.elapsedSec - this.perceptionQueue[0].time >= this.reactionDelaySec
+      ) {
+        this.lastKnownPlayerPos = this.perceptionQueue.shift()!.node;
+      }
     }
 
     // Acoustic Noise Event Detection (Thrown cans, flares, vent echoes, recharge hum, sprints!)
@@ -665,13 +934,51 @@ export class DiddyAiController {
         this.floor === target.floor &&
         Math.hypot(this.x - target.x, this.z - target.z) < 1.15;
 
+      // When LOS is lost and P. Drizzy reaches LKP, pause and look left/right for 2.5s searching!
+      if (reachedLastKnown && !canDirectlySeeActivePlayer && this.lkpSearchTimer <= 0 && this.timeSinceSeenPlayer < 3.6) {
+        this.lkpSearchTimer = Math.min(2.5, Math.max(0.4, 3.9 - this.timeSinceSeenPlayer));
+        this.lkpSearchBaseYaw = this.yaw;
+        this.path = [];
+      }
+
+      if (this.lkpSearchTimer > 0 && !canDirectlySeeActivePlayer) {
+        this.lkpSearchTimer -= dt;
+        // Organic head/body sweep left & right searching at Last Known Position
+        const sweepPhase = (2.5 - this.lkpSearchTimer) * 2.5;
+        const desiredLookYaw = this.lkpSearchBaseYaw + Math.sin(sweepPhase) * 1.15;
+        let dYaw = desiredLookYaw - this.yaw;
+        while (dYaw > Math.PI) dYaw -= Math.PI * 2;
+        while (dYaw < -Math.PI) dYaw += Math.PI * 2;
+        const maxTurn = 2.8 * dt;
+        this.yaw += Math.max(-maxTurn, Math.min(maxTurn, dYaw));
+        this.vx *= Math.max(0, 1 - dt * 8);
+        this.vz *= Math.max(0, 1 - dt * 8);
+        this.animState = 'investigate';
+
+        if (this.lkpSearchTimer <= 0 || this.timeSinceSeenPlayer >= 4.0) {
+          this.lkpSearchTimer = 0;
+          const leaveX = this.x;
+          const leaveZ = this.z;
+          this.state = 'patrol';
+          this.lastKnownPlayerPos = null;
+          this.investigateTarget = null;
+          this.perceptionQueue = [];
+          this.patrolIndex = this.pickDistantPatrolIndex(layout, leaveX, leaveZ);
+          this.path = [];
+          this.patrolPauseTimer = 0.6;
+        }
+        return events;
+      }
+
       // Strict 4.0s give-up when LOS is lost
-      if (this.timeSinceSeenPlayer >= 4.0 || (reachedLastKnown && !canDirectlySeeActivePlayer)) {
+      if (this.timeSinceSeenPlayer >= 4.0) {
+        this.lkpSearchTimer = 0;
         const leaveX = this.x;
         const leaveZ = this.z;
         this.state = 'patrol';
         this.lastKnownPlayerPos = null;
         this.investigateTarget = null;
+        this.perceptionQueue = [];
         this.patrolIndex = this.pickDistantPatrolIndex(layout, leaveX, leaveZ);
         this.path = [];
         this.patrolPauseTimer = 0.6;
@@ -728,7 +1035,7 @@ export class DiddyAiController {
       this.pathRecalcTimer = this.state === 'chase' ? 0.35 : 0.75;
     }
 
-    // 6. Follow Path Smoothly (respecting solid walls, CELL_VENT, and powered FNAF blast doors!)
+    // 6. Follow Path with 12-Whisker Context Steering, Turn-Rate Cap & Cornering Momentum
     if (this.path.length > 0) {
       const next = this.path[0];
       const dx = next.x - this.x;
@@ -738,13 +1045,44 @@ export class DiddyAiController {
       if (distNode < 0.45 && (next.floor === this.floor || getStairHeightAt(this.x, this.z, this.y).onStair)) {
         this.path.shift();
       } else if (distNode > 0.001) {
-        const step = Math.min(distNode, moveSpeed * dt);
-        const mx = (dx / distNode) * step;
-        const mz = (dz / distNode) * step;
+        // Use 12-ray Context Steering on flat floors to glide cleanly around all furniture colliders & walls;
+        // on narrow stair ramps keep pure stair alignment so vertical Y interpolation stays silky smooth.
+        const onStairNow = getStairHeightAt(this.x, this.z, this.y).onStair;
+        const rawDirX = dx / distNode;
+        const rawDirZ = dz / distNode;
+        const steered = onStairNow
+          ? { dirX: rawDirX, dirZ: rawDirZ, blockedDirectly: false }
+          : computeContextSteeringDirection(layout, this.x, this.z, this.floor, rawDirX, rawDirZ, 1.85);
+
+        // Smooth angular turn-rate limit (NO instant snapping!)
+        const desiredYaw = Math.atan2(steered.dirX, steered.dirZ);
+        let deltaYaw = desiredYaw - this.yaw;
+        while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
+        while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
+        const maxTurnRate = this.state === 'chase' ? 3.85 : 3.15;
+        const maxTurnStep = maxTurnRate * dt;
+        this.yaw += Math.max(-maxTurnStep, Math.min(maxTurnStep, deltaYaw));
+
+        // Momentum & cornering deceleration: sharp turns naturally slow sprint slightly before accelerating out
+        const turnSeverity = Math.min(1, Math.abs(deltaYaw) / Math.PI);
+        const cornerSpeedFactor = 1.0 - turnSeverity * 0.44;
+        const targetSpeed = moveSpeed * cornerSpeedFactor;
+
+        const headingX = Math.sin(this.yaw);
+        const headingZ = Math.cos(this.yaw);
+        const wishVx = (headingX * 0.65 + steered.dirX * 0.35) * targetSpeed;
+        const wishVz = (headingZ * 0.65 + steered.dirZ * 0.35) * targetSpeed;
+        const accelAlpha = 1 - Math.exp(-(this.state === 'chase' ? 6.8 : 5.4) * dt);
+        this.vx += (wishVx - this.vx) * accelAlpha;
+        this.vz += (wishVz - this.vz) * accelAlpha;
+
+        const stepLen = Math.hypot(this.vx * dt, this.vz * dt);
+        const mx = this.vx * dt;
+        const mz = this.vz * dt;
 
         // Open unlocked normal wooden doors only (NEVER breach locked doors or closed powered FNAF blast doors!)
-        const aheadGx = worldToGrid(this.x + (dx / distNode) * 0.9);
-        const aheadGz = worldToGrid(this.z + (dz / distNode) * 0.9);
+        const aheadGx = worldToGrid(this.x + steered.dirX * 0.9);
+        const aheadGz = worldToGrid(this.z + steered.dirZ * 0.9);
         const nearDoor = isDoorBlockingCell(layout.doors, aheadGx, aheadGz, this.floor, false);
         if (nearDoor && nearDoor.isUnlocked && !nearDoor.isOpen && nearDoor.lockType !== 'fnaf_blast') {
           nearDoor.isOpen = true;
@@ -776,16 +1114,10 @@ export class DiddyAiController {
         }
 
         const movedDist = Math.hypot(this.x - prevX, this.z - prevZ);
-        if (movedDist < step * 0.15) {
+        if (stepLen > 0.02 && movedDist < stepLen * 0.14) {
           this.path = [];
-          this.pathRecalcTimer = 0.25;
+          this.pathRecalcTimer = 0.22;
         }
-
-        const desiredYaw = Math.atan2(dx, dz);
-        let deltaYaw = desiredYaw - this.yaw;
-        while (deltaYaw > Math.PI) deltaYaw -= Math.PI * 2;
-        while (deltaYaw < -Math.PI) deltaYaw += Math.PI * 2;
-        this.yaw += deltaYaw * Math.min(1, dt * 10);
 
         this.stepDistAccum += movedDist;
         const stride = this.state === 'chase' ? 1.55 : 1.75;

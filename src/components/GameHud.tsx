@@ -1,11 +1,16 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Backpack,
   BookOpen,
   Map as MapIcon,
+  Maximize2,
+  Mic,
+  MicOff,
+  Minimize2,
   PackageMinus,
   Pause,
   Settings,
+  Users,
   Volume2,
   VolumeX,
 } from 'lucide-react';
@@ -24,6 +29,14 @@ interface GameHudProps {
   onOpenJournal: () => void;
   onOpenSettings: () => void;
   onToggleMute: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
+  mpActive?: boolean;
+  micEnabled?: boolean;
+  onToggleMic?: () => void;
+  voicePeers?: Array<{ id: string; nickname: string }>;
+  mutedVoicePeers?: string[];
+  onToggleMutePeer?: (peerId: string) => void;
   onPause: () => void;
   onSelectSlot: (idx: number) => void;
   onDropActiveItem: () => void;
@@ -128,11 +141,20 @@ export const GameHud: React.FC<GameHudProps> = ({
   onOpenJournal,
   onOpenSettings,
   onToggleMute,
+  isFullscreen = false,
+  onToggleFullscreen,
+  mpActive = false,
+  micEnabled = false,
+  onToggleMic,
+  voicePeers = [],
+  mutedVoicePeers = [],
+  onToggleMutePeer,
   onPause,
   onSelectSlot,
   onDropActiveItem,
   onInteractClick,
 }) => {
+  const [voiceMenuOpen, setVoiceMenuOpen] = useState(false);
   const miniRef = useRef<HTMLCanvasElement | null>(null);
   const minimapPosition = settings.controls.minimapPosition ?? 'top-right';
 
@@ -530,6 +552,78 @@ export const GameHud: React.FC<GameHudProps> = ({
                   {muted ? <VolumeX className="w-4 h-4 text-red-400" /> : <Volume2 className="w-4 h-4" />}
                 </button>
               </>
+            )}
+            {mpActive && onToggleMic && (
+              <div className="relative flex items-center gap-1">
+                <button
+                  type="button"
+                  tabIndex={-1}
+                  data-testid="hud-voice-mic-btn"
+                  onClick={(e) => {
+                    e.currentTarget.blur();
+                    onToggleMic();
+                  }}
+                  aria-label={micEnabled ? 'Silenciar Microfone (Voice Chat)' : 'Ativar Microfone (Voice Chat)'}
+                  className={`horror-btn p-1.5 sm:p-2 cursor-pointer ${
+                    micEnabled ? 'text-emerald-300 border-emerald-400/70' : 'text-slate-300'
+                  }`}
+                >
+                  {micEnabled ? <Mic className="w-4 h-4 animate-pulse" /> : <MicOff className="w-4 h-4 text-red-400" />}
+                </button>
+                {voicePeers.length > 0 && onToggleMutePeer && (
+                  <button
+                    type="button"
+                    tabIndex={-1}
+                    data-testid="hud-voice-peers-btn"
+                    onClick={(e) => {
+                      e.currentTarget.blur();
+                      setVoiceMenuOpen((v) => !v);
+                    }}
+                    aria-label="Mutar jogadores no Voice Chat"
+                    className="horror-btn p-1.5 sm:p-2 text-cyan-300 cursor-pointer"
+                  >
+                    <Users className="w-4 h-4" />
+                  </button>
+                )}
+                {voiceMenuOpen && voicePeers.length > 0 && onToggleMutePeer && (
+                  <div className="absolute right-0 top-full mt-1.5 w-48 hud-tactical-panel p-2 space-y-1 z-40 border border-cyan-500/45 bg-slate-950/95">
+                    <div className="text-[9px] font-tech font-bold uppercase tracking-wider text-cyan-300 border-b border-slate-800 pb-1">
+                      VOZ POR PROXIMIDADE
+                    </div>
+                    {voicePeers.map((peer) => {
+                      const peerMuted = mutedVoicePeers.includes(peer.id);
+                      return (
+                        <button
+                          key={peer.id}
+                          type="button"
+                          onClick={() => onToggleMutePeer(peer.id)}
+                          className="w-full flex items-center justify-between gap-2 px-1.5 py-1 text-[10px] font-tech text-slate-200 hover:bg-slate-800/80 cursor-pointer"
+                        >
+                          <span className="truncate">{peer.nickname}</span>
+                          <span className={peerMuted ? 'text-red-400 font-bold' : 'text-emerald-300 font-bold'}>
+                            {peerMuted ? 'MUDO' : 'VOZ'}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
+            {onToggleFullscreen && (
+              <button
+                type="button"
+                tabIndex={-1}
+                data-testid="hud-fullscreen-btn"
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onToggleFullscreen();
+                }}
+                aria-label={isFullscreen ? 'Sair da Tela Cheia' : 'Ativar Tela Cheia'}
+                className="horror-btn p-1.5 sm:p-2 text-slate-200 cursor-pointer"
+              >
+                {isFullscreen ? <Minimize2 className="w-4 h-4 text-amber-300" /> : <Maximize2 className="w-4 h-4" />}
+              </button>
             )}
             <button
               type="button"

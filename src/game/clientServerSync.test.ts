@@ -15,10 +15,18 @@ import {
   PeerInterpolationBuffer,
 } from '../network/MultiplayerClient';
 import { CELL_SIZE, generateMansionLayout, resolveWorldMovement } from './mansionMap';
-import { DiddyAiController, hasLineOfSight } from './ai';
+import {
+  DiddyAiController,
+  compute3DProximityDistance,
+  computeContextSteeringDirection,
+  findDualFloorPath,
+  hasLineOfSight,
+} from './ai';
 import { getDifficultyConfig } from './difficulty';
 import { CloudSyncManager } from './cloudSync';
 import { createDefaultSaveV4, mergeCloudSaveData } from './saveSystem';
+import { ENDING_CUTSCENES, INTRO_CUTSCENE } from './cutscenes';
+import { computeVoiceSpatialParams, VOICE_ICE_SERVERS } from '../network/ProximityVoice';
 
 test('Solo Mode runs on deterministic 10ms GameServer across all 4 ending routes', async () => {
   // 1. Bad Ending: Solo player captured into cell -> GameServer triggers 'bad' ending
@@ -406,4 +414,185 @@ test('Lossless Local-to-Cloud Migration preserves max coins, endings, perks and 
     'iron_lungs',
     'silent_steps',
   ]);
+});
+
+test('Locked Door Single-Use Key Rule: unlocking consumes key ONCE and door NEVER re-locks', async () => {
+  const srv = new GameServer(202611, 'hard');
+  const p = srv.addPlayer({ id: 'host', nickname: 'Host', platform: 'pc' });
+  const redDoor = srv.layout.doors.find((d) => d.lockType === 'red_key')!;
+  assert.ok(redDoor, 'Layout must have a red_key locked door');
+  assert.equal(srv.state.doors[redDoor.id].locked, true);
+  assert.equal(srv.state.doors[redDoor.id].isOpen, false);
+
+  // Give player red_key & interact -> MUST unlock permanently, open door, and CONSUME red_key
+  p.inventory.push('red_key');
+  p.floor = redDoor.floor;
+  const unlockP = srv.enqueueIntent('host', { type: 'interact_door', doorId: redDoor.id });
+  srv.stepTick();
+  const unlockRes = await unlockP;
+  assert.equal(unlockRes.ok, true);
+  assert.equal(unlockRes.code, 'UNLOCKED');
+  assert.equal(p.inventory.includes('red_key'), false, 'red_key MUST be consumed once on unlock');
+  assert.equal(srv.state.doors[redDoor.id].locked, false);
+  assert.equal(srv.state.doors[redDoor.id].isUnlocked, true);
+  assert.equal(srv.state.doors[redDoor.id].isOpen, true);
+
+  // Closing and re-opening WITHOUT key MUST succeed freely and NEVER re-lock!
+  const closeP = srv.enqueueIntent('host', { type: 'interact_door', doorId: redDoor.id });
+  srv.stepTick();
+  const closeRes = await closeP;
+  assert.equal(closeRes.code, 'CLOSED');
+  assert.equal(srv.state.doors[redDoor.id].locked, false);
+  assert.equal(srv.state.doors[redDoor.id].isOpen, false);
+
+  const reopenP = srv.enqueueIntent('host', { type: 'interact_door', doorId: redDoor.id });
+  srv.stepTick();
+  const reopenRes = await reopenP;
+  assert.equal(reopenRes.code, 'OPENED');
+  assert.equal(srv.state.doors[redDoor.id].locked, false);
+  assert.equal(srv.state.doors[redDoor.id].isOpen, true);
+});
+
+test('Organic P. Drizzy AI: 12-Whisker Context Steering avoids furniture, respects 180-250ms reaction delay & accesses Underground', () => {
+  const layout = generateMansionLayout(202622, 'hard');
+  const diff = getDifficultyConfig('hard');
+  const ai = new DiddyAiController();
+  ai.reset(layout);
+
+  // 1. Reaction delay must be strictly within 180ms–250ms (humanized juke window)
+  assert.ok(
+    ai.reactionDelaySec >= 0.18 && ai.reactionDelaySec <= 0.25,
+    `Expected reactionDelaySec in [0.18, 0.25], got ${ai.reactionDelaySec}`
+  );
+
+  // 2. Context Steering detects a solid furniture collider directly ahead and steers around it
+  const furniture = layout.furnitureColliders.find(
+    (c) => c.floor === 0 && c.height >= 0.5 && c.maxX - c.minX >= 0.6
+  )!;
+  assert.ok(furniture, 'Must find a solid furniture obstacle');
+  const cx = (furniture.minX + furniture.maxX) * 0.5;
+  const cz = (furniture.minZ + furniture.maxZ) * 0.5;
+  const startX = furniture.minX - 0.75;
+  const steered = computeContextSteeringDirection(layout, startX, cz, 0, cx - startX, 0, 1.85);
+  assert.equal(steered.blockedDirectly, true, 'Whiskers must detect furniture directly ahead');
+  assert.ok(
+    Math.abs(steered.dirZ) > 0.15 || steered.dirX < 0.95,
+    'Context Steering must deflect smoothly around solid furniture instead of ramming straight'
+  );
+
+  // 3. Underground access via unlocked stairs produces smooth dual-floor path down to Floor -1
+  for (const d of layout.doors) {
+    if (d.lockType === 'basement_key') {
+      d.isUnlocked = true;
+      d.isOpen = true;
+    }
+  }
+  const pathToBasement = findDualFloorPath(
+    layout,
+    layout.spawnPoint.x,
+    0,
+    layout.spawnPoint.z,
+    layout.patrolWaypoints.find((w) => w.floor === -1)!.x,
+    -1,
+    layout.patrolWaypoints.find((w) => w.floor === -1)!.z,
+    2400
+  );
+  assert.ok(pathToBasement.length > 5, 'Must compute path from Ground Floor to Underground');
+  assert.equal(pathToBasement[pathToBasement.length - 1].floor, -1, 'Path must reach Underground Floor (-1)');
+  // Ensure reaction delay lag during sudden player juke (does not instantly snap LKP at dt=0.05s)
+  ai.x = 26;
+  ai.y = 0;
+  ai.z = 38;
+  ai.floor = 0;
+  ai.tick({
+    dt: 0.05,
+    elapsedSec: 10.0,
+    layout,
+    diff,
+    playerX: 28,
+    playerY: 0,
+    playerZ: 38,
+    playerFloor: 0,
+    playerCrouching: false,
+    playerFlashlightOn: true,
+    playerHidingSpot: null,
+    playerEnteredHidingThisFrame: false,
+    noiseEvents: [],
+  });
+  const firstPerceived = ai.getPerceivedTarget();
+  ai.tick({
+    dt: 0.05,
+    elapsedSec: 10.05,
+    layout,
+    diff,
+    playerX: 31,
+    playerY: 0,
+    playerZ: 40,
+    playerFloor: 0,
+    playerCrouching: false,
+    playerFlashlightOn: true,
+    playerHidingSpot: null,
+    playerEnteredHidingThisFrame: false,
+    noiseEvents: [],
+  });
+  const after50ms = ai.getPerceivedTarget();
+  assert.ok(firstPerceived && after50ms);
+  assert.equal(after50ms!.x, firstPerceived!.x, 'Perceived target must lag behind sudden juke (<210ms)');
+});
+
+test('Real 3D Floor-Aware Proximity & Proximity Voice Spatialization prevent false cross-floor alerts', () => {
+  // Same X, Z directly on top of each other, but Ground Floor (y=0) vs Basement (y=-4.0)
+  const crossFloorDist = compute3DProximityDistance(28.0, 0.0, 35.0, 28.0, -4.0, 35.0);
+  assert.ok(
+    crossFloorDist > 20.0,
+    `Cross-floor distance via stairs must be > 20m (not 2D 0m!), got ${crossFloorDist.toFixed(2)}m`
+  );
+
+  // Same floor 3m apart -> exact 3.0m
+  const sameFloorDist = compute3DProximityDistance(28.0, 0.0, 35.0, 31.0, 0.0, 35.0);
+  assert.ok(Math.abs(sameFloorDist - 3.0) < 0.01);
+
+  // Proximity Voice Chat attenuation: 100% <= 4m, smooth falloff 4m..22m, muted > 22m
+  assert.ok(VOICE_ICE_SERVERS.length >= 3, 'Must configure Google + Cloudflare STUN servers');
+  const near = computeVoiceSpatialParams({ x: 10, y: 0, z: 10, yaw: 0 }, { x: 13, y: 0, z: 10 });
+  assert.equal(near.gain, 1.0, 'Voice gain must be 100% within 4m');
+  assert.equal(near.audible, true);
+
+  const mid = computeVoiceSpatialParams({ x: 10, y: 0, z: 10, yaw: 0 }, { x: 23, y: 0, z: 10 });
+  assert.ok(mid.gain > 0.05 && mid.gain < 0.95, `Mid-range (13m) voice must attenuate smoothly, got ${mid.gain}`);
+
+  const far = computeVoiceSpatialParams({ x: 10, y: 0, z: 10, yaw: 0 }, { x: 35, y: 0, z: 10 });
+  assert.equal(far.gain, 0, 'Voice must be completely muted beyond 22m');
+  assert.equal(far.audible, false);
+});
+
+test('Dedicated 3D Cutscene Sets & Anchors: all 4 endings + intro have valid bounded 3D coordinates (ZERO void)', () => {
+  const allDefs = [INTRO_CUTSCENE, ...Object.values(ENDING_CUTSCENES)];
+  assert.equal(allDefs.length, 5);
+
+  for (const def of allDefs) {
+    const { bounds, survivorStart, survivorEnd, diddyStart, diddyEnd, groundY } = def.anchors;
+    assert.ok(bounds.maxX > bounds.minX && bounds.maxZ > bounds.minZ, `${def.id} bounds must be valid`);
+
+    const checkInside = (label: string, pt: [number, number, number]) => {
+      assert.ok(
+        pt[0] >= bounds.minX && pt[0] <= bounds.maxX && pt[2] >= bounds.minZ && pt[2] <= bounds.maxZ,
+        `${def.id} ${label} (${pt.join(',')}) must lie strictly inside its enclosed 3D cutscene set bounds`
+      );
+      assert.ok(
+        pt[1] >= groundY - 0.5 && pt[1] <= groundY + 12.0,
+        `${def.id} ${label} Y=${pt[1]} must stay above solid set groundY=${groundY}`
+      );
+    };
+
+    checkInside('survivorStart', survivorStart);
+    checkInside('survivorEnd', survivorEnd);
+    checkInside('diddyStart', diddyStart);
+    checkInside('diddyEnd', diddyEnd);
+
+    for (let i = 0; i < def.cameras.length; i++) {
+      checkInside(`camera[${i}].pos`, def.cameras[i].pos);
+      checkInside(`camera[${i}].lookAt`, def.cameras[i].lookAt);
+    }
+  }
 });

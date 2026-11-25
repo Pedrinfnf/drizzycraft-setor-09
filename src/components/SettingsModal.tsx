@@ -4,6 +4,8 @@ import {
   Globe,
   Keyboard,
   LayoutGrid,
+  Maximize2,
+  Minimize2,
   RotateCcw,
   Sliders,
   Smartphone,
@@ -34,6 +36,8 @@ interface SettingsModalProps {
   onChange: (next: GameSettings) => void;
   onReset: () => void;
   onOpenHudEditor: () => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
   onClose: () => void;
 }
 
@@ -72,6 +76,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onChange,
   onReset,
   onOpenHudEditor,
+  isFullscreen = false,
+  onToggleFullscreen,
   onClose,
 }) => {
   const [tab, setTab] = useState<TabId>('video');
@@ -203,6 +209,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {onToggleFullscreen && (
+              <button
+                type="button"
+                data-testid="settings-fullscreen-btn"
+                onClick={onToggleFullscreen}
+                aria-label={isFullscreen ? 'Sair da Tela Cheia' : 'Ativar Tela Cheia'}
+                className="horror-btn px-2.5 py-1.5 text-[11px] font-tech font-bold uppercase text-cyan-300 flex items-center gap-1 cursor-pointer whitespace-nowrap"
+              >
+                {isFullscreen ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+                <span className="hidden sm:inline">{isFullscreen ? 'Janela' : 'Tela Cheia'}</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={onReset}

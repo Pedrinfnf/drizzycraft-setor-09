@@ -7,6 +7,16 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { DiddyAiController } from './ai';
 import { HorrorAudioEngine } from './audio';
 import { evaluateCutsceneSpline, getCutsceneScript, getTitleFlyoverCamera } from './cutscenes';
+import {
+  buildDedicatedCutsceneSets,
+  createArticulatedPeerRig,
+  updatePeerHeldItem,
+  updatePeerNametag,
+  updatePeerRigAnimation,
+  type ArticulatedPeerRig,
+  type DedicatedCutsceneSetsRig,
+  type PeerAnimState,
+} from './cutsceneSets';
 import { getDifficultyConfig } from './difficulty';
 import { HoldBreathMinigame } from './holdBreath';
 import {
@@ -143,6 +153,7 @@ import type {
   GameSettings,
   GloveSkinId,
   HidingSpotDefinition,
+  WorldPickupType,
   HotbarSlotInfo,
   HudSnapshot,
   InteractPrompt,
@@ -404,10 +415,42 @@ export class HorrorEngine {
   private itemRenders: Record<string, string> = {};
   private remotePeerRigs = new Map<
     string,
-    { group: THREE.Group; targetX: number; targetY: number; targetZ: number; targetYaw: number; floor: FloorId }
+    {
+      rig: ArticulatedPeerRig;
+      targetX: number;
+      targetY: number;
+      targetZ: number;
+      targetYaw: number;
+      targetPitch: number;
+      floor: FloorId;
+      crouching: boolean;
+      sprinting: boolean;
+      speaking: boolean;
+      captured: boolean;
+      flashlightOn: boolean;
+      uvOn: boolean;
+      heldItem: string | null;
+      nickname: string;
+      platform: 'pc' | 'touch' | 'gamepad';
+    }
   >();
   private mpPingMs: number | null = null;
   private mpSpectating = false;
+  private isRemoteClient = false;
+  private remoteDiddyTarget = {
+    x: 0,
+    y: FLOOR_0_Y,
+    z: 0,
+    yaw: 0,
+    floor: 0 as FloorId,
+    state: 'patrol' as import('./types').DiddyAiState,
+    initialized: false,
+  };
+  private cutsceneSets: DedicatedCutsceneSetsRig | null = null;
+  private cutsceneSurvivorRig: ArticulatedPeerRig | null = null;
+  public onWorldSyncEvent:
+    | ((ev: { kind: 'door' | 'item' | 'generator' | 'safe' | 'terminal' | 'ending'; payload: Record<string, unknown> }) => void)
+    | null = null;
   private clueMeshes = new Map<string, THREE.Group>();
   private noisePropMeshes = new Map<string, THREE.Group>();
   private rechargeVisuals = new Map<string, { group: THREE.Group; statusMat: THREE.MeshStandardMaterial }>();
@@ -784,7 +827,25 @@ export class HorrorEngine {
   }
 
   public setMultiplayerPeers(
-    peers: { id: string; x: number; y: number; z: number; yaw: number; floor: FloorId; alive: boolean }[],
+    peers: {
+      id: string;
+      x: number;
+      y: number;
+      z: number;
+      yaw: number;
+      pitch?: number;
+      floor: FloorId;
+      alive: boolean;
+      crouching?: boolean;
+      sprinting?: boolean;
+      speaking?: boolean;
+      captured?: boolean;
+      flashlightOn?: boolean;
+      uvOn?: boolean;
+      heldItem?: string | null;
+      nickname?: string;
+      platform?: 'pc' | 'touch' | 'gamepad';
+    }[],
     pingMs: number | null,
     spectating: boolean
   ): void {
@@ -796,18 +857,28 @@ export class HorrorEngine {
       seen.add(peer.id);
       let entry = this.remotePeerRigs.get(peer.id);
       if (!entry) {
-        const group = createVoxelSurvivorRig(this.materialPack);
-        group.position.set(peer.x, peer.y, peer.z);
-        group.rotation.y = peer.yaw;
-        group.visible = peer.alive;
-        this.scene.add(group);
+        const rig = createArticulatedPeerRig(true);
+        rig.root.position.set(peer.x, peer.y, peer.z);
+        rig.root.rotation.y = peer.yaw;
+        rig.root.visible = peer.alive || Boolean(peer.captured);
+        this.scene.add(rig.root);
         entry = {
-          group,
+          rig,
           targetX: peer.x,
           targetY: peer.y,
           targetZ: peer.z,
           targetYaw: peer.yaw,
+          targetPitch: peer.pitch ?? 0,
           floor: peer.floor,
+          crouching: Boolean(peer.crouching),
+          sprinting: Boolean(peer.sprinting),
+          speaking: Boolean(peer.speaking),
+          captured: Boolean(peer.captured),
+          flashlightOn: peer.flashlightOn !== false,
+          uvOn: Boolean(peer.uvOn),
+          heldItem: peer.heldItem ?? null,
+          nickname: peer.nickname || 'Aliado',
+          platform: peer.platform ?? 'pc',
         };
         this.remotePeerRigs.set(peer.id, entry);
       } else {
@@ -815,14 +886,24 @@ export class HorrorEngine {
         entry.targetY = peer.y;
         entry.targetZ = peer.z;
         entry.targetYaw = peer.yaw;
+        entry.targetPitch = peer.pitch ?? 0;
         entry.floor = peer.floor;
-        entry.group.visible = peer.alive;
+        entry.crouching = Boolean(peer.crouching);
+        entry.sprinting = Boolean(peer.sprinting);
+        entry.speaking = Boolean(peer.speaking);
+        entry.captured = Boolean(peer.captured);
+        entry.flashlightOn = peer.flashlightOn !== false;
+        entry.uvOn = Boolean(peer.uvOn);
+        entry.heldItem = peer.heldItem ?? null;
+        if (peer.nickname) entry.nickname = peer.nickname;
+        if (peer.platform) entry.platform = peer.platform;
+        entry.rig.root.visible = peer.alive || Boolean(peer.captured);
       }
     }
 
     for (const [id, entry] of this.remotePeerRigs.entries()) {
       if (!seen.has(id)) {
-        this.scene.remove(entry.group);
+        this.scene.remove(entry.rig.root);
         this.remotePeerRigs.delete(id);
       }
     }
@@ -833,9 +914,14 @@ export class HorrorEngine {
     y: number;
     z: number;
     yaw: number;
+    pitch: number;
     floor: FloorId;
     crouching: boolean;
+    sprinting: boolean;
     flashlightOn: boolean;
+    uvOn: boolean;
+    heldItem: string | null;
+    captured: boolean;
     alive: boolean;
   } {
     return {
@@ -843,9 +929,14 @@ export class HorrorEngine {
       y: this.py,
       z: this.pz,
       yaw: this.yaw,
+      pitch: this.pitch,
       floor: this.pFloor,
       crouching: this.crouching,
+      sprinting: this.sprinting,
       flashlightOn: this.flashlightOn,
+      uvOn: this.uvMode,
+      heldItem: this.inventory[this.activeSlot] ?? null,
+      captured: this.mpSpectating,
       alive: this.health > 0 && this.mode !== 'defeat' && this.mode !== 'jumpscare',
     };
   }
@@ -853,10 +944,18 @@ export class HorrorEngine {
   public applyRemoteDoorToggle(doorId: string, isOpen: boolean, isUnlocked: boolean): void {
     const door = this.layout.doors.find((d) => d.id === doorId);
     if (!door) return;
+    // Once unlocked, a door NEVER re-locks!
+    const nextUnlocked = door.isUnlocked || isUnlocked;
+    door.isUnlocked = nextUnlocked;
     door.isOpen = isOpen;
-    door.isUnlocked = isUnlocked;
+    if (this.authoritativeServer && this.authoritativeServer.state.doors[doorId]) {
+      const ds = this.authoritativeServer.state.doors[doorId];
+      ds.isUnlocked = nextUnlocked;
+      ds.locked = !nextUnlocked;
+      ds.isOpen = isOpen;
+    }
     const dv = this.doorVisuals.find((v) => v.def.id === doorId);
-    if (isUnlocked) {
+    if (nextUnlocked) {
       if (dv?.padlockMesh) dv.padlockMesh.visible = false;
       if (dv?.plankGroup) dv.plankGroup.visible = false;
     }
@@ -864,6 +963,153 @@ export class HorrorEngine {
       this.moonLight.shadow.needsUpdate = true;
     }
     this.emitHud();
+  }
+
+  public applyRemoteItemSync(
+    itemId: string,
+    collected: boolean,
+    dropInfo?: { itemType?: WorldPickupType; floor?: FloorId; x?: number; y?: number; z?: number }
+  ): void {
+    let item = this.layout.items.find((it) => it.id === itemId);
+    if (collected) {
+      if (item) {
+        item.collected = true;
+        item.insideSafe = false;
+      }
+      if (this.authoritativeServer && this.authoritativeServer.state.items[itemId]) {
+        this.authoritativeServer.state.items[itemId].collected = true;
+      }
+      const mesh = detachCollectedItemMesh(
+        itemId,
+        this.itemMeshes,
+        this.floor0Chunks,
+        this.floorMinus1Chunks
+      );
+      if (mesh && mesh.parent) {
+        mesh.parent.remove(mesh);
+      }
+      this.emitHud();
+      return;
+    }
+
+    // Item dropped by a teammate -> ensure mesh exists at exact world position
+    if (!item && dropInfo?.itemType && typeof dropInfo.x === 'number' && typeof dropInfo.z === 'number') {
+      const fl: FloorId = dropInfo.floor ?? 0;
+      const wy = dropInfo.y ?? (fl === -1 ? FLOOR_MINUS_1_Y + 0.14 : FLOOR_0_Y + 0.14);
+      item = {
+        id: itemId,
+        itemType: dropInfo.itemType,
+        label: getItemLabel(dropInfo.itemType),
+        zoneId: 'remote_drop',
+        floor: fl,
+        x: dropInfo.x,
+        y: wy,
+        z: dropInfo.z,
+        collected: false,
+        insideSafe: false,
+        droppedByPlayer: true,
+      };
+      this.layout.items.push(item);
+      const mesh = createItemPickupMesh(item, this.materialPack.contactShadowTex);
+      mesh.position.set(item.x, item.y, item.z);
+      this.worldRegistry.trackObject3D(mesh);
+      this.worldGroup.add(mesh);
+      this.itemMeshes.set(item.id, mesh);
+      if (fl === -1) this.floorMinus1Chunks.push(mesh);
+      else this.floor0Chunks.push(mesh);
+      this.emitHud();
+    }
+  }
+
+  public getAuthoritativeWorldDelta(): CompactDeltaPacket {
+    const stateList: readonly import('./types').DiddyAiState[] = [
+      'patrol',
+      'investigate',
+      'chase',
+      'inspecting_hiding',
+      'search_hiding',
+      'stunned',
+    ];
+    const stIdx = Math.max(0, stateList.indexOf(this.ai.state));
+    return {
+      t: Math.floor(this.elapsedSec * 100),
+      s: Date.now(),
+      p: [],
+      d: [
+        Math.round(this.ai.x * 100) / 100,
+        Math.round(this.ai.y * 100) / 100,
+        Math.round(this.ai.z * 100) / 100,
+        Math.round(this.ai.yaw * 1000) / 1000,
+        this.ai.floor,
+        stIdx,
+      ],
+    };
+  }
+
+  public exportAuthoritativeFullSnapshot(): GameWorldState {
+    const doors: GameWorldState['doors'] = {};
+    for (const d of this.layout.doors) {
+      doors[d.id] = {
+        id: d.id,
+        isOpen: d.isOpen,
+        isUnlocked: d.isUnlocked,
+        locked: !d.isUnlocked,
+        planksRemoved: Boolean(d.planksRemoved),
+        electronicUnlocked: Boolean(d.electronicUnlocked),
+      };
+    }
+    const items: GameWorldState['items'] = {};
+    for (const it of this.layout.items) {
+      items[it.id] = {
+        id: it.id,
+        itemType: it.itemType,
+        floor: it.floor,
+        x: it.x,
+        y: it.y,
+        z: it.z,
+        collected: it.collected,
+        insideSafe: Boolean(it.insideSafe),
+        droppedByPlayer: Boolean(it.droppedByPlayer),
+      };
+    }
+    return {
+      tick: Math.floor(this.elapsedSec * 100),
+      serverTimeMs: Date.now(),
+      seed: this.layout.seed,
+      difficulty: this.difficulty,
+      elapsedSec: this.elapsedSec,
+      phase: this.mode === 'playing' ? 'playing' : 'ended',
+      endingId: null,
+      players: {},
+      diddy: {
+        x: this.ai.x,
+        y: this.ai.y,
+        z: this.ai.z,
+        yaw: this.ai.yaw,
+        floor: this.ai.floor,
+        state: this.ai.state,
+        animState: this.ai.animState,
+        stunnedTimer: 0,
+        targetPlayerId: null,
+      },
+      items,
+      doors,
+      safeUnlocked: this.layout.safe.unlocked,
+      fuseInstalled: this.fuseInstalled,
+      generatorFixed: this.generatorFixed,
+      blackoutActive: this.blackoutActive,
+      terminalUnlocked: this.terminalUnlocked,
+      hatchOpened: false,
+      securityPowerPct: this.securityPowerPct,
+      fnafLeftClosed: this.layout.doors.find((d) => d.id === 'door_fnaf_left')?.isOpen === false,
+      fnafRightClosed: this.layout.doors.find((d) => d.id === 'door_fnaf_right')?.isOpen === false,
+      discoveredClueIds: [],
+      discoveredUvMarkIds: [],
+      listenedCassetteIds: [],
+      translationBoardSeen: this.translationBoardSeen,
+      cctvSecretHintSeen: this.cctvSecretHintSeen,
+      lightSwitches: {},
+    };
   }
 
   public applyRemoteGeneratorFixed(): void {
@@ -885,16 +1131,46 @@ export class HorrorEngine {
 
   private updateRemotePeerRigs(dt: number): void {
     if (this.remotePeerRigs.size === 0) return;
-    const k = Math.min(1, dt * 12);
+    const k = Math.min(1, dt * 14);
     for (const entry of this.remotePeerRigs.values()) {
-      if (!entry.group.visible) continue;
-      entry.group.position.x += (entry.targetX - entry.group.position.x) * k;
-      entry.group.position.y += (entry.targetY - entry.group.position.y) * k;
-      entry.group.position.z += (entry.targetZ - entry.group.position.z) * k;
-      let diff = entry.targetYaw - entry.group.rotation.y;
+      const root = entry.rig.root;
+      if (!root.visible) continue;
+      const prevX = root.position.x;
+      const prevZ = root.position.z;
+      root.position.x += (entry.targetX - root.position.x) * k;
+      root.position.y += (entry.targetY - root.position.y) * k;
+      root.position.z += (entry.targetZ - root.position.z) * k;
+      let diff = entry.targetYaw - root.rotation.y;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      entry.group.rotation.y += diff * k;
+      root.rotation.y += diff * k;
+
+      const speed = dt > 0.0005 ? Math.hypot(root.position.x - prevX, root.position.z - prevZ) / dt : 0;
+      let animState: PeerAnimState = 'idle';
+      if (entry.captured) {
+        animState = 'captured';
+      } else if (entry.crouching) {
+        animState = speed > 0.35 ? 'crouch_walk' : 'crouch_idle';
+      } else if (speed > 4.2 || (entry.sprinting && speed > 1.2)) {
+        animState = 'run';
+      } else if (speed > 0.35) {
+        animState = 'walk';
+      }
+
+      updatePeerRigAnimation(entry.rig, animState, entry.targetPitch, dt);
+      updatePeerHeldItem(entry.rig, entry.heldItem, entry.flashlightOn, entry.uvOn);
+      const dist = Math.hypot(
+        root.position.x - this.px,
+        root.position.y - this.py,
+        root.position.z - this.pz
+      );
+      updatePeerNametag(entry.rig, {
+        nickname: entry.nickname,
+        platform: entry.platform,
+        speaking: entry.speaking,
+        captured: entry.captured,
+        distanceMeters: dist,
+      });
     }
   }
 
@@ -1383,6 +1659,8 @@ export class HorrorEngine {
       ? Math.floor(customSeed)
       : Math.floor(Date.now() % 1000000) + 17;
     this.localPlayerId = localPlayerId;
+    this.isRemoteClient = !runLocalServer;
+    this.remoteDiddyTarget.initialized = false;
     const progInit = saveSystem.getProgression();
     if (runLocalServer) {
       this.authoritativeServer = new GameServer(seed, difficulty);
@@ -1550,15 +1828,62 @@ export class HorrorEngine {
   promoteToHostFromSnapshot(snapshot?: GameWorldState): GameServer | null {
     const snap = snapshot ?? this.lastSelfHealSnapshot;
     if (!snap) return null;
+    this.isRemoteClient = false;
     this.authoritativeServer = GameServer.fromSnapshot(snap);
     this.applyReplicatedWorldSnapshot(snap);
     return this.authoritativeServer;
   }
 
   applyCompactDelta(delta: CompactDeltaPacket): void {
+    if (delta.d && this.isRemoteClient) {
+      const stateList: readonly import('./types').DiddyAiState[] = [
+        'patrol',
+        'investigate',
+        'chase',
+        'inspecting_hiding',
+        'search_hiding',
+        'stunned',
+      ];
+      const [dx, dy, dz, dyaw, dfloor, stIdx] = delta.d;
+      const st = stateList[stIdx] ?? 'patrol';
+      this.remoteDiddyTarget.x = dx;
+      this.remoteDiddyTarget.y = dy;
+      this.remoteDiddyTarget.z = dz;
+      this.remoteDiddyTarget.yaw = dyaw;
+      this.remoteDiddyTarget.floor = dfloor;
+      this.remoteDiddyTarget.state = st;
+      if (!this.remoteDiddyTarget.initialized) {
+        this.remoteDiddyTarget.initialized = true;
+        this.ai.x = dx;
+        this.ai.y = dy;
+        this.ai.z = dz;
+        this.ai.yaw = dyaw;
+        this.ai.floor = dfloor;
+      }
+      this.ai.state = st;
+      this.ai.animState =
+        st === 'chase'
+          ? 'chase'
+          : st === 'stunned'
+          ? 'stunned'
+          : st === 'investigate'
+          ? 'investigate'
+          : 'patrol';
+    }
     if (delta.e?.doors) {
       for (const [doorId, ds] of Object.entries(delta.e.doors)) {
         this.applyRemoteDoorToggle(doorId, ds.isOpen, ds.isUnlocked);
+      }
+    }
+    if (delta.e?.items) {
+      for (const [itemId, it] of Object.entries(delta.e.items)) {
+        this.applyRemoteItemSync(itemId, it.collected, {
+          itemType: it.itemType,
+          floor: it.floor,
+          x: it.x,
+          y: it.y,
+          z: it.z,
+        });
       }
     }
     if (delta.e?.generatorFixed && !this.generatorFixed) {
@@ -1574,8 +1899,37 @@ export class HorrorEngine {
 
   applyReplicatedWorldSnapshot(snapshot: GameWorldState): void {
     this.lastSelfHealSnapshot = snapshot;
+    if (this.isRemoteClient && snapshot.diddy) {
+      this.remoteDiddyTarget.x = snapshot.diddy.x;
+      this.remoteDiddyTarget.y = snapshot.diddy.y;
+      this.remoteDiddyTarget.z = snapshot.diddy.z;
+      this.remoteDiddyTarget.yaw = snapshot.diddy.yaw;
+      this.remoteDiddyTarget.floor = snapshot.diddy.floor;
+      this.remoteDiddyTarget.state = snapshot.diddy.state;
+      if (!this.remoteDiddyTarget.initialized) {
+        this.remoteDiddyTarget.initialized = true;
+        this.ai.x = snapshot.diddy.x;
+        this.ai.y = snapshot.diddy.y;
+        this.ai.z = snapshot.diddy.z;
+        this.ai.yaw = snapshot.diddy.yaw;
+        this.ai.floor = snapshot.diddy.floor;
+      }
+      this.ai.state = snapshot.diddy.state;
+      this.ai.animState = snapshot.diddy.animState;
+    }
     for (const [doorId, ds] of Object.entries(snapshot.doors)) {
       this.applyRemoteDoorToggle(doorId, ds.isOpen, ds.isUnlocked);
+    }
+    if (snapshot.items) {
+      for (const [itemId, it] of Object.entries(snapshot.items)) {
+        this.applyRemoteItemSync(itemId, it.collected, {
+          itemType: it.itemType,
+          floor: it.floor,
+          x: it.x,
+          y: it.y,
+          z: it.z,
+        });
+      }
     }
     if (snapshot.generatorFixed && !this.generatorFixed) {
       this.applyRemoteGeneratorFixed();
@@ -2642,6 +2996,10 @@ export class HorrorEngine {
         }
 
         item.collected = true;
+        this.onWorldSyncEvent?.({
+          kind: 'item',
+          payload: { itemId: item.id, collected: true, itemType: item.itemType },
+        });
         const mesh = detachCollectedItemMesh(
           item.id,
           this.itemMeshes,
@@ -2906,6 +3264,7 @@ export class HorrorEngine {
         return;
       }
       this.generatorFixed = true;
+      this.onWorldSyncEvent?.({ kind: 'generator', payload: { powered: true, fuseInserted: true } });
       this.blackoutActive = false;
       this.blackoutAlertTimer = 0;
       this.securityPowerPct = Math.min(100, this.securityPowerPct + 40);
@@ -2999,7 +3358,7 @@ export class HorrorEngine {
       this.worldGroup.remove(this.worldGroup.children[0]);
     }
     for (const entry of this.remotePeerRigs.values()) {
-      this.scene.remove(entry.group);
+      this.scene.remove(entry.rig.root);
     }
     this.remotePeerRigs.clear();
     this.worldRegistry.disposeAll();
@@ -3326,6 +3685,15 @@ export class HorrorEngine {
     this.survivorRig.visible = false;
     this.worldRegistry.trackObject3D(this.survivorRig);
     this.worldGroup.add(this.survivorRig);
+
+    this.cutsceneSurvivorRig = createArticulatedPeerRig(false);
+    this.cutsceneSurvivorRig.root.visible = false;
+    this.worldRegistry.trackObject3D(this.cutsceneSurvivorRig.root);
+    this.worldGroup.add(this.cutsceneSurvivorRig.root);
+
+    this.cutsceneSets = buildDedicatedCutsceneSets();
+    this.worldRegistry.trackObject3D(this.cutsceneSets.root);
+    this.worldGroup.add(this.cutsceneSets.root);
 
     this.buildLivingPropsGlassAndDecals();
 
@@ -4436,11 +4804,18 @@ export class HorrorEngine {
           door.lockType === 'basement_key'
             ? this.layout.doors.filter((d) => d.lockType === 'basement_key')
             : [door];
+        // Single-use key consumption: remove the used key from inventory once & unlock permanently
+        this.inventory = this.inventory.filter((it) => it !== requiredKey);
+        this.activeSlot = Math.max(0, Math.min(this.activeSlot, this.inventory.length - 1));
         for (const targetDoor of doorsToUnlock) {
           targetDoor.isUnlocked = true;
           targetDoor.isOpen = true;
           const dv = this.doorVisuals.find((v) => v.def.id === targetDoor.id);
           if (dv?.padlockMesh) dv.padlockMesh.visible = false;
+          this.onWorldSyncEvent?.({
+            kind: 'door',
+            payload: { doorId: targetDoor.id, open: true, locked: false, isUnlocked: true },
+          });
         }
         this.triggerViewmodelAction('key_turn');
         this.audio.playKeyLockTurn();
@@ -4473,6 +4848,10 @@ export class HorrorEngine {
     }
 
     door.isOpen = !door.isOpen;
+    this.onWorldSyncEvent?.({
+      kind: 'door',
+      payload: { doorId: door.id, open: door.isOpen, locked: !door.isUnlocked, isUnlocked: door.isUnlocked },
+    });
     if (this.moonLight.castShadow) {
       this.moonLight.shadow.needsUpdate = true;
     }
@@ -4910,37 +5289,38 @@ export class HorrorEngine {
 
     const script = getCutsceneScript(id);
     const firstCam = script.cameras[0];
+    const anchors = script.anchors;
     this.cutsceneCamPos.set(...firstCam.pos);
     this.cutsceneCamLook.set(...firstCam.lookAt);
 
+    // Disable player velocity/gravity during cutscenes so no actor can ever fall into void
+    this.vx = 0;
+    this.vz = 0;
+
+    // Toggle ONLY the dedicated enclosed 3D cutscene set for this scene
+    if (this.cutsceneSets) {
+      this.cutsceneSets.sets.gate_road.visible = anchors.setId === 'gate_road';
+      this.cutsceneSets.sets.basement_tunnel.visible = anchors.setId === 'basement_tunnel';
+      this.cutsceneSets.sets.helipad_roof.visible = anchors.setId === 'helipad_roof';
+      this.cutsceneSets.sets.containment_cell.visible = anchors.setId === 'containment_cell';
+      this.cutsceneSets.gateLeftPivot.rotation.y = -1.35;
+      this.cutsceneSets.gateRightPivot.rotation.y = 1.35;
+      this.cutsceneSets.cellDoorPivot.rotation.y = -1.4;
+      this.cutsceneSets.helicopterGroup.position.set(180, 6.0, 12.2);
+    }
+
     if (this.diddyRig) {
       this.diddyRig.root.visible = true;
-      if (id === 'intro') {
-        this.diddyRig.root.position.set(gridToWorld(5.5), FLOOR_0_Y, gridToWorld(11.0));
-        this.diddyRig.root.rotation.y = 0;
-      } else if (id === 'ending_bad') {
-        this.diddyRig.root.position.set(gridToWorld(17.5), FLOOR_MINUS_1_Y, gridToWorld(14.5));
-        this.diddyRig.root.rotation.y = 0;
-      } else {
-        this.diddyRig.root.position.set(gridToWorld(17.5), FLOOR_0_Y, gridToWorld(10.8));
-        this.diddyRig.root.rotation.y = Math.PI;
-      }
+      this.diddyRig.root.position.set(...anchors.diddyStart);
+      this.diddyRig.root.rotation.y = anchors.diddyFacingYaw;
     }
     if (this.survivorRig) {
-      this.survivorRig.visible = true;
-      if (id === 'intro') {
-        this.survivorRig.position.set(gridToWorld(17.5), FLOOR_0_Y, gridToWorld(31.8));
-        this.survivorRig.rotation.y = Math.PI;
-      } else if (id === 'ending_bad') {
-        this.survivorRig.position.set(gridToWorld(17.5), FLOOR_MINUS_1_Y, gridToWorld(16.2));
-        this.survivorRig.rotation.y = Math.PI;
-      } else if (id === 'ending_real') {
-        this.survivorRig.position.set(gridToWorld(17.5), FLOOR_0_Y, gridToWorld(3.9));
-        this.survivorRig.rotation.y = 0;
-      } else {
-        this.survivorRig.position.set(gridToWorld(17.5), FLOOR_0_Y, gridToWorld(3.0));
-        this.survivorRig.rotation.y = Math.PI;
-      }
+      this.survivorRig.visible = false;
+    }
+    if (this.cutsceneSurvivorRig) {
+      this.cutsceneSurvivorRig.root.visible = script.showSurvivor;
+      this.cutsceneSurvivorRig.root.position.set(...anchors.survivorStart);
+      this.cutsceneSurvivorRig.root.rotation.y = anchors.survivorFacingYaw;
     }
 
     this.transitionFade = 0.72;
@@ -5007,6 +5387,13 @@ export class HorrorEngine {
     this.camera.fov = this.settings.video.fov;
     this.camera.updateProjectionMatrix();
     if (this.survivorRig) this.survivorRig.visible = false;
+    if (this.cutsceneSurvivorRig) this.cutsceneSurvivorRig.root.visible = false;
+    if (this.cutsceneSets) {
+      this.cutsceneSets.sets.gate_road.visible = false;
+      this.cutsceneSets.sets.basement_tunnel.visible = false;
+      this.cutsceneSets.sets.helipad_roof.visible = false;
+      this.cutsceneSets.sets.containment_cell.visible = false;
+    }
     this.ai.reset(this.layout);
     this.setBodyState('playing');
     this.showBanner('Examine o rádio e as placas na Recepção. Use a Sala de Segurança (CCTV), Dutos [C] e Bancada!');
@@ -5359,6 +5746,13 @@ export class HorrorEngine {
     this.syncFlashlightWorldPose(0.45, FLASHLIGHT_CONFIG.color);
     this.heldItemRig.root.visible = false;
     if (this.survivorRig) this.survivorRig.visible = false;
+    if (this.cutsceneSurvivorRig) this.cutsceneSurvivorRig.root.visible = false;
+    if (this.cutsceneSets) {
+      this.cutsceneSets.sets.gate_road.visible = false;
+      this.cutsceneSets.sets.basement_tunnel.visible = false;
+      this.cutsceneSets.sets.helipad_roof.visible = false;
+      this.cutsceneSets.sets.containment_cell.visible = false;
+    }
 
     // Live Guardhouse Main Menu: P. Drizzy silently stalks across the moonlit courtyard corridor!
     if (this.diddyRig) {
@@ -5411,19 +5805,86 @@ export class HorrorEngine {
       this.camera.updateProjectionMatrix();
     }
 
+    const anchors = script.anchors;
+    const totalProgress = Math.max(
+      0,
+      Math.min(1, (this.cutsceneStepIdx + stepProgress) / Math.max(1, script.steps.length))
+    );
+
+    // Choreographed Survivor motion (running through gate, boarding vehicle/helicopter, glancing back)
+    if (this.cutsceneSurvivorRig && this.cutsceneSurvivorRig.root.visible) {
+      const runT = Math.min(1, totalProgress * 1.25);
+      const sxPos = anchors.survivorStart[0] + (anchors.survivorEnd[0] - anchors.survivorStart[0]) * runT;
+      const syPos = anchors.survivorStart[1] + (anchors.survivorEnd[1] - anchors.survivorStart[1]) * runT;
+      const szPos = anchors.survivorStart[2] + (anchors.survivorEnd[2] - anchors.survivorStart[2]) * runT;
+      this.cutsceneSurvivorRig.root.position.set(sxPos, syPos, szPos);
+      // Glance back toward P. Drizzy during confrontation steps, otherwise face run direction
+      const glanceBack = script.diddyBackdropSteps.includes(this.cutsceneStepIdx) ? 0.55 : 0;
+      this.cutsceneSurvivorRig.root.rotation.y = anchors.survivorFacingYaw + glanceBack;
+      const survAnim: PeerAnimState =
+        anchors.setId === 'containment_cell'
+          ? totalProgress > 0.65
+            ? 'captured'
+            : 'walk'
+          : runT < 0.96
+          ? 'run'
+          : 'idle';
+      // Hide survivor once boarded inside helicopter during final takeoff
+      if (anchors.setId === 'helipad_roof' && totalProgress > 0.78) {
+        this.cutsceneSurvivorRig.root.visible = false;
+      }
+      updatePeerRigAnimation(this.cutsceneSurvivorRig, survAnim, 0, dt);
+    }
+
+    // Choreographed P. Drizzy pursuit -> furious gate pounding
     if (this.diddyRig) {
-      updateDiddyRigAnimation(
-        this.diddyRig,
-        this.activeCutscene === 'intro' ? 'patrol' : 'chase',
-        dt
-      );
+      const diddyT = Math.min(1, totalProgress * 1.35);
+      const dxPos = anchors.diddyStart[0] + (anchors.diddyEnd[0] - anchors.diddyStart[0]) * diddyT;
+      const dyPos = anchors.diddyStart[1] + (anchors.diddyEnd[1] - anchors.diddyStart[1]) * diddyT;
+      const dzPos = anchors.diddyStart[2] + (anchors.diddyEnd[2] - anchors.diddyStart[2]) * diddyT;
+      this.diddyRig.root.position.set(dxPos, dyPos, dzPos);
+      this.diddyRig.root.rotation.y = anchors.diddyFacingYaw;
+      const diddyAnim =
+        this.activeCutscene === 'intro'
+          ? 'patrol'
+          : diddyT >= 0.92
+          ? 'breach_door'
+          : 'chase';
+      updateDiddyRigAnimation(this.diddyRig, diddyAnim, dt);
+    }
+
+    // Animate dedicated 3D Cutscene Set props (gate slam, cell slam, car strobes, helicopter rotors & takeoff)
+    if (this.cutsceneSets) {
+      if (anchors.setId === 'gate_road') {
+        const closeT = Math.max(0, Math.min(1, (totalProgress - 0.22) * 3.2));
+        this.cutsceneSets.gateLeftPivot.rotation.y = -1.35 * (1 - closeT);
+        this.cutsceneSets.gateRightPivot.rotation.y = 1.35 * (1 - closeT);
+        const flash = Math.sin(this.totalTimeSec * 14) > 0;
+        (this.cutsceneSets.carBeaconRed.material as THREE.MeshStandardMaterial).emissiveIntensity = flash ? 4.2 : 0.4;
+        (this.cutsceneSets.carBeaconBlue.material as THREE.MeshStandardMaterial).emissiveIntensity = flash ? 0.4 : 4.2;
+      } else if (anchors.setId === 'containment_cell') {
+        const slamT = Math.max(0, Math.min(1, (totalProgress - 0.45) * 4.5));
+        this.cutsceneSets.cellDoorPivot.rotation.y = -1.4 * (1 - slamT);
+        this.cutsceneSets.cellCageLight.intensity = 2.6 + Math.sin(this.totalTimeSec * 23) * 0.55;
+      } else if (anchors.setId === 'helipad_roof') {
+        this.cutsceneSets.helicopterMainRotor.rotation.y += dt * 26;
+        this.cutsceneSets.helicopterTailRotor.rotation.x += dt * 32;
+        const blink = Math.sin(this.totalTimeSec * 10) > 0;
+        (this.cutsceneSets.strobeRed.material as THREE.MeshStandardMaterial).emissiveIntensity = blink ? 4.5 : 0.3;
+        (this.cutsceneSets.strobeBlue.material as THREE.MeshStandardMaterial).emissiveIntensity = blink ? 0.3 : 4.5;
+        // Smooth dramatic helicopter takeoff on the final beat!
+        const liftT = Math.max(0, (totalProgress - 0.72) / 0.28);
+        const smoothLift = liftT * liftT * (3 - 2 * liftT);
+        this.cutsceneSets.helicopterGroup.position.set(180, 6.0 + smoothLift * 5.2, 12.2 - smoothLift * 3.5);
+        this.cutsceneSets.helicopterGroup.rotation.x = -smoothLift * 0.12;
+      }
     }
 
     this.cutsceneStepElapsed += dt;
     if (this.cutsceneStepElapsed >= step.autoAdvanceSec) {
       this.advanceCutscene();
     }
-    this.updateFloorVisibility(0, false);
+    this.updateFloorVisibility(anchors.floor, false);
   }
 
   private tickJumpscare(dt: number): void {
@@ -5610,6 +6071,13 @@ export class HorrorEngine {
     const diffCfg = getDifficultyConfig(this.difficulty);
     this.heldItemRig.root.visible = !this.hidingSpot && !this.cctvOpen;
     if (this.survivorRig) this.survivorRig.visible = false;
+    if (this.cutsceneSurvivorRig) this.cutsceneSurvivorRig.root.visible = false;
+    if (this.cutsceneSets) {
+      this.cutsceneSets.sets.gate_road.visible = false;
+      this.cutsceneSets.sets.basement_tunnel.visible = false;
+      this.cutsceneSets.sets.helipad_roof.visible = false;
+      this.cutsceneSets.sets.containment_cell.visible = false;
+    }
 
     if (this.statusBannerTimer > 0) {
       this.statusBannerTimer -= dt;
@@ -6121,27 +6589,67 @@ export class HorrorEngine {
         : 0;
     this.syncFlashlightWorldPose(waterFlashPower, this.flashlight.color.getHex());
 
-    // 4. Tick Fair P. Drizzy AI (respects vents & sealed FNAF blast doors!)
-    const aiEvents = this.ai.tick({
-      dt,
-      elapsedSec: this.elapsedSec,
-      layout: this.layout,
-      diff: diffCfg,
-      playerX: this.px,
-      playerY: this.py,
-      playerZ: this.pz,
-      playerFloor: this.pFloor,
-      playerCrouching: this.crouching,
-      playerInVent: this.inVent,
-      playerFlashlightOn: this.flashlightOn,
-      playerHidingSpot: this.hidingSpot,
-      playerEnteredHidingThisFrame: this.enteredHidingThisFrame,
-      playerInvulnerable: this.invulnerableTimer > 0,
-      blackoutAlertActive: this.blackoutAlertTimer > 0,
-      noiseEvents: this.noiseQueue,
-    });
-    this.enteredHidingThisFrame = false;
-    this.noiseQueue.length = 0;
+    // 4. Authoritative P. Drizzy AI:
+    // - On Host / Solo: executes full organic AI (Context Steering + 210ms Reaction Delay + LKP Search)
+    // - On Remote Client (`isRemoteClient === true`): COMPLETELY DISABLES local AI execution and smoothly
+    //   interpolates the single authoritative P. Drizzy replicated from the Host GameServer!
+    let aiEvents: ReturnType<DiddyAiController['tick']>;
+    if (this.isRemoteClient) {
+      const kD = Math.min(1, dt * 14);
+      const prevDx = this.ai.x;
+      const prevDz = this.ai.z;
+      if (this.remoteDiddyTarget.initialized) {
+        this.ai.x += (this.remoteDiddyTarget.x - this.ai.x) * kD;
+        this.ai.y += (this.remoteDiddyTarget.y - this.ai.y) * kD;
+        this.ai.z += (this.remoteDiddyTarget.z - this.ai.z) * kD;
+        let dyaw = this.remoteDiddyTarget.yaw - this.ai.yaw;
+        while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+        while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+        this.ai.yaw += dyaw * kD;
+        this.ai.floor = this.remoteDiddyTarget.floor;
+        this.ai.state = this.remoteDiddyTarget.state;
+      }
+      const moved = Math.hypot(this.ai.x - prevDx, this.ai.z - prevDz);
+      const remoteHit =
+        diffCfg.diddyActive &&
+        !this.hidingSpot &&
+        !this.inVent &&
+        this.invulnerableTimer <= 0 &&
+        this.ai.state !== 'stunned' &&
+        this.ai.floor === this.pFloor &&
+        Math.hypot(this.px - this.ai.x, this.pz - this.ai.z) < 1.05;
+      aiEvents = {
+        footstepTriggered: moved > 0.045 && Math.floor(this.elapsedSec * 3.5) !== Math.floor((this.elapsedSec - dt) * 3.5),
+        breachedDoor: null,
+        spottedPlayer: false,
+        hitPlayer: remoteHit,
+        pulledFromHidingSpot: null,
+        inspectingHidingSpot: null,
+      };
+      this.enteredHidingThisFrame = false;
+      this.noiseQueue.length = 0;
+    } else {
+      aiEvents = this.ai.tick({
+        dt,
+        elapsedSec: this.elapsedSec,
+        layout: this.layout,
+        diff: diffCfg,
+        playerX: this.px,
+        playerY: this.py,
+        playerZ: this.pz,
+        playerFloor: this.pFloor,
+        playerCrouching: this.crouching,
+        playerInVent: this.inVent,
+        playerFlashlightOn: this.flashlightOn,
+        playerHidingSpot: this.hidingSpot,
+        playerEnteredHidingThisFrame: this.enteredHidingThisFrame,
+        playerInvulnerable: this.invulnerableTimer > 0,
+        blackoutAlertActive: this.blackoutAlertTimer > 0,
+        noiseEvents: this.noiseQueue,
+      });
+      this.enteredHidingThisFrame = false;
+      this.noiseQueue.length = 0;
+    }
 
     const drizzyOccludeHz = this.computeDrizzySoundOcclusionHz();
 
@@ -7854,7 +8362,7 @@ export class HorrorEngine {
     window.removeEventListener('mousemove', this.handleMouseMove);
 
     for (const entry of this.remotePeerRigs.values()) {
-      this.scene.remove(entry.group);
+      this.scene.remove(entry.rig.root);
     }
     this.remotePeerRigs.clear();
     this.worldRegistry.disposeAll();

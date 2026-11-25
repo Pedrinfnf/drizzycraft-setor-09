@@ -25,12 +25,16 @@ export interface PeerTransformSnapshot {
   yaw: number;
   pitch: number;
   crouching?: boolean;
+  sprinting?: boolean;
+  speaking?: boolean;
   flashlightOn?: boolean;
   uvOn?: boolean;
   heldItem?: string | null;
   captured?: boolean;
   spectating?: boolean;
   alive?: boolean;
+  nickname?: string;
+  platform?: PlayerPlatform;
 }
 
 export interface RoomPlayerInfo {
@@ -281,12 +285,16 @@ export class PeerInterpolationBuffer {
           yaw: lerpAngle(s0.yaw, s1.yaw, alpha),
           pitch: lerp(s0.pitch, s1.pitch, alpha),
           crouching: discrete.crouching,
+          sprinting: discrete.sprinting,
+          speaking: discrete.speaking,
           flashlightOn: discrete.flashlightOn,
           uvOn: discrete.uvOn,
           heldItem: discrete.heldItem,
           captured: discrete.captured,
           spectating: discrete.spectating,
           alive: discrete.alive,
+          nickname: discrete.nickname,
+          platform: discrete.platform,
         };
       }
     }
@@ -326,6 +334,8 @@ export type MultiplayerEventType =
   | 'compact_delta'
   | 'self_heal_snapshot'
   | 'host_migrated'
+  | 'voice_signal'
+  | 'world_event'
   | 'connection_change'
   | 'ping_update'
   | 'error';
@@ -744,12 +754,16 @@ export class MultiplayerClient {
         yaw: Number(msg.yaw) || 0,
         pitch: Number(msg.pitch) || 0,
         crouching: Boolean(msg.crouching),
+        sprinting: Boolean(msg.sprinting),
+        speaking: Boolean(msg.speaking),
         flashlightOn: Boolean(msg.flashlightOn),
         uvOn: Boolean(msg.uvOn),
         heldItem: typeof msg.heldItem === 'string' ? msg.heldItem : null,
         captured: Boolean(msg.captured),
         spectating: Boolean(msg.spectating),
         alive: msg.alive !== false,
+        nickname: typeof msg.nickname === 'string' ? msg.nickname : undefined,
+        platform: (msg.platform === 'touch' || msg.platform === 'gamepad' || msg.platform === 'pc') ? msg.platform : undefined,
       });
       return;
     }
@@ -819,6 +833,14 @@ export class MultiplayerClient {
     else if (type === 'sync_ping') this.emit('ping_synced', msg);
     else if (type === 'capture_player') this.emit('player_captured', msg);
     else if (type === 'rescue_player') this.emit('player_rescued', msg);
+    else if (type === 'voice_signal') {
+      const targetId = typeof msg.targetPeerId === 'string' ? msg.targetPeerId : '';
+      if (!targetId || targetId === this.playerId) {
+        this.emit('voice_signal', { fromPeerId: senderId, signal: msg.signal });
+      }
+    } else if (type === 'world_event') {
+      this.emit('world_event', msg);
+    }
   }
 
   disconnect(): void {
@@ -1421,6 +1443,24 @@ export class MultiplayerClient {
     if (this.mode !== 'online') return;
     if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'rescue_player', targetPlayerId });
     else this.sendRaw({ type: 'rescue_player', targetPlayerId });
+  }
+
+  sendVoiceSignal(targetPeerId: string, signal: unknown): void {
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') {
+      this.broadcastRelayRoom({ type: 'voice_signal', targetPeerId, signal });
+    } else {
+      this.sendRaw({ type: 'voice_signal', targetPeerId, signal });
+    }
+  }
+
+  broadcastWorldEvent(payload: Record<string, unknown>): void {
+    if (this.mode !== 'online') return;
+    if (this.transport === 'relay') {
+      this.broadcastRelayRoom({ type: 'world_event', ...payload });
+    } else {
+      this.sendRaw({ type: 'world_event', ...payload });
+    }
   }
 }
 

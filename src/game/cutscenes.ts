@@ -2,6 +2,21 @@ import * as THREE from 'three';
 import { gridToWorld } from './mansionMap';
 import type { CutsceneCameraKeyframe, CutsceneId, DialogueStep, EndingId } from './types';
 
+export interface CutsceneAnchors {
+  setId: 'courtyard_intro' | 'gate_road' | 'basement_tunnel' | 'helipad_roof' | 'containment_cell';
+  floor: 0 | -1;
+  groundY: number;
+  /** Valid solid bounding box (xMin, xMax, zMin, zMax) guaranteeing zero cameras/actors in void */
+  bounds: { minX: number; maxX: number; minZ: number; maxZ: number };
+  survivorStart: [number, number, number];
+  survivorEnd: [number, number, number];
+  survivorFacingYaw: number;
+  diddyStart: [number, number, number];
+  diddyEnd: [number, number, number];
+  diddyFacingYaw: number;
+  vehiclePos?: [number, number, number];
+}
+
 export interface CutsceneDefinition {
   id: CutsceneId;
   chapterTitle: string;
@@ -12,6 +27,8 @@ export interface CutsceneDefinition {
   showSurvivor: boolean;
   /** Show menacing P. Drizzy silhouette in background during specific steps */
   diddyBackdropSteps: number[];
+  /** Dedicated enclosed 3D cutscene set & choreographed actor anchors (zero void!) */
+  anchors: CutsceneAnchors;
 }
 
 export interface EndingMetadata {
@@ -61,23 +78,37 @@ export const ENDING_METADATA: Record<EndingId, EndingMetadata> = {
  * Lore: O jogador pula o muro atrás do amigo desaparecido Vigia Marcos.
  * O portão perimetral tranca eletronicamente e o rádio chiado do Marcos alerta sobre o Sujeito 09: P. Drizzy.
  */
+const INTRO_CX = gridToWorld(17.5);
+
 export const INTRO_CUTSCENE: CutsceneDefinition = {
   id: 'intro',
   chapterTitle: 'CAPÍTULO 1 — SETOR 09',
   subtitle: 'O Turno Perdido • Complexo de Pesquisa Interditado',
   showSurvivor: true,
   diddyBackdropSteps: [3, 4],
+  anchors: {
+    setId: 'courtyard_intro',
+    floor: 0,
+    groundY: 0,
+    bounds: { minX: gridToWorld(12), maxX: gridToWorld(23), minZ: gridToWorld(20), maxZ: gridToWorld(33) },
+    survivorStart: [INTRO_CX, 0, gridToWorld(30.4)],
+    survivorEnd: [INTRO_CX, 0, gridToWorld(26.2)],
+    survivorFacingYaw: Math.PI,
+    diddyStart: [INTRO_CX - 1.4, 0, gridToWorld(22.6)],
+    diddyEnd: [INTRO_CX + 0.4, 0, gridToWorld(23.5)],
+    diddyFacingYaw: 0,
+  },
   cameras: [
     // 0: High wide cinematic establishing crane over the moonlit courtyard wall & Sector 09 facade
-    { pos: [14.8, 3.85, 29.8], lookAt: [12.0, 2.0, 23.0], fov: 64, shake: 0.004 },
+    { pos: [INTRO_CX + 2.8, 3.35, gridToWorld(31.2)], lookAt: [INTRO_CX, 1.75, gridToWorld(24.8)], fov: 64, shake: 0.004 },
     // 1: Vaulting down into the courtyard gravel beside the rain-slicked cobbles
-    { pos: [12.6, 1.95, 27.6], lookAt: [11.4, 1.35, 25.0], fov: 68, shake: 0.015 },
+    { pos: [INTRO_CX + 1.5, 1.88, gridToWorld(29.8)], lookAt: [INTRO_CX - 0.3, 1.35, gridToWorld(26.5)], fov: 66, shake: 0.014 },
     // 2: Rapid pan back as the heavy perimeter gate slams shut with an electronic deadbolt
-    { pos: [11.2, 1.68, 25.4], lookAt: [12.0, 1.55, 29.5], fov: 58, shake: 0.022 },
+    { pos: [INTRO_CX - 1.2, 1.65, gridToWorld(28.2)], lookAt: [INTRO_CX, 1.55, gridToWorld(31.8)], fov: 58, shake: 0.02 },
     // 3: Dramatic dolly toward the illuminated reception corridor where P. Drizzy's silhouette looms
-    { pos: [13.5, 1.72, 26.2], lookAt: [12.0, 1.85, 21.8], fov: 52, shake: 0.01 },
+    { pos: [INTRO_CX + 1.6, 1.72, gridToWorld(27.5)], lookAt: [INTRO_CX, 1.72, gridToWorld(23.2)], fov: 52, shake: 0.01 },
     // 4: Intimate eye-level transition into 1st-person perspective right at the reception threshold
-    { pos: [12.0, 1.65, 25.9], lookAt: [12.0, 1.58, 22.8], fov: 74, shake: 0.005 },
+    { pos: [INTRO_CX, 1.65, gridToWorld(28.0)], lookAt: [INTRO_CX, 1.58, gridToWorld(24.5)], fov: 72, shake: 0.005 },
   ],
   steps: [
     {
@@ -140,7 +171,7 @@ export const INTRO_CUTSCENE: CutsceneDefinition = {
 
 /**
  * BAD ENDING — "Contenção do Setor 09"
- * Arrastado pelo corredor escuro até as celas subterrâneas enquanto a porta blindada fecha com estrondo.
+ * Dedicated enclosed 3D Containment Cell 09 set (x=120, y=-4, z=62) — zero void!
  */
 export const ENDING_BAD_CUTSCENE: CutsceneDefinition = {
   id: 'ending_bad',
@@ -148,15 +179,27 @@ export const ENDING_BAD_CUTSCENE: CutsceneDefinition = {
   subtitle: 'Celas Subterrâneas • Protocolo de Isolamento Ativado',
   showSurvivor: true,
   diddyBackdropSteps: [0, 1, 2],
+  anchors: {
+    setId: 'containment_cell',
+    floor: -1,
+    groundY: -4.0,
+    bounds: { minX: 112, maxX: 128, minZ: 54, maxZ: 70 },
+    survivorStart: [120, -4.0, 65.2],
+    survivorEnd: [120, -4.0, 60.4],
+    survivorFacingYaw: 0,
+    diddyStart: [120.2, -4.0, 66.8],
+    diddyEnd: [120.0, -4.0, 63.1],
+    diddyFacingYaw: Math.PI,
+  },
   cameras: [
-    // 0: Low erratic floor-level POV being dragged backward along the wet basement corridor
-    { pos: [14.6, -2.85, 19.4], lookAt: [14.2, -2.1, 14.5], fov: 72, shake: 0.036 },
-    // 1: Tight Dutch-angle close-up looking up at P. Drizzy towering at the threshold of Cela 09
-    { pos: [14.1, -2.55, 15.2], lookAt: [14.2, -1.65, 12.6], fov: 50, shake: 0.026 },
-    // 2: Violent jolt as the heavy blast cell door slams shut in front of the lens
-    { pos: [14.2, -2.15, 12.9], lookAt: [14.2, -2.05, 11.1], fov: 46, shake: 0.042 },
-    // 3: Cold slow pull-out into the claustrophobic dark cell as the radio fades out
-    { pos: [14.2, -2.0, 10.6], lookAt: [14.2, -2.1, 13.8], fov: 58, shake: 0.01 },
+    // 0: Low erratic floor-level POV inside illuminated Containment Corridor looking up at P. Drizzy
+    { pos: [121.6, -2.85, 65.8], lookAt: [120.0, -2.35, 62.0], fov: 68, shake: 0.032 },
+    // 1: Tight close-up at the armored cell threshold as P. Drizzy looms above the survivor
+    { pos: [118.8, -2.55, 63.6], lookAt: [120.0, -2.05, 62.6], fov: 50, shake: 0.024 },
+    // 2: Heavy blast cell bars slamming shut right in front of the survivor
+    { pos: [120.0, -2.35, 60.8], lookAt: [120.0, -2.25, 63.0], fov: 48, shake: 0.038 },
+    // 3: Slow claustrophobic pull-out inside furnished Cell 09 under flickering cage light
+    { pos: [120.4, -2.15, 58.2], lookAt: [120.0, -2.3, 62.6], fov: 58, shake: 0.01 },
   ],
   steps: [
     {
@@ -207,24 +250,38 @@ export const ENDING_BAD_CUTSCENE: CutsceneDefinition = {
 };
 
 /**
- * GOOD ENDING — "Fuga pelo Portão Norte"
- * Escapando pelo Portão Blindado Norte rumo à floresta noturna enquanto P. Drizzy observa pelas grades.
+ * GOOD ENDING — "Fuga pelo Portão Norte / Estrada"
+ * Dedicated enclosed 3D exterior road set (x=120, y=0, z=-18): asphalt road, street lamps,
+ * perimeter fence, trees, getaway patrol car & slamming iron North Gate — ZERO void!
  */
 export const ENDING_GOOD_CUTSCENE: CutsceneDefinition = {
   id: 'ending_good',
   chapterTitle: 'FUGA PELO PORTÃO NORTE',
-  subtitle: 'Good Ending • Perímetro Superado & Sinal do Nível -2',
+  subtitle: 'Good Ending • Estrada Exterior & Viatura de Fuga',
   showSurvivor: true,
-  diddyBackdropSteps: [1],
+  diddyBackdropSteps: [1, 2],
+  anchors: {
+    setId: 'gate_road',
+    floor: 0,
+    groundY: 0,
+    bounds: { minX: 104, maxX: 136, minZ: -32, maxZ: -4 },
+    survivorStart: [120, 0, -10.5],
+    survivorEnd: [120, 0, -21.5],
+    survivorFacingYaw: Math.PI,
+    diddyStart: [120, 0, -6.2],
+    diddyEnd: [120, 0, -9.2],
+    diddyFacingYaw: Math.PI,
+    vehiclePos: [123.6, 0, -23.0],
+  },
   cameras: [
-    // 0: Heroic low-angle push as the massive Armored North Gate unlocks & parts open into night forest
-    { pos: [12.0, 1.55, 2.5], lookAt: [12.0, 1.68, -1.8], fov: 62, shake: 0.01 },
-    // 1: Dramatic whip-pan back toward the iron bars as P. Drizzy watches/charges behind the closing gate
-    { pos: [14.2, 2.05, 1.2], lookAt: [12.0, 1.72, 6.4], fov: 50, shake: 0.024 },
-    // 2: Wide moonlit forest crane framing the survivor catching their breath outside the perimeter
-    { pos: [9.6, 2.1, -0.8], lookAt: [12.0, 1.55, 2.2], fov: 58, shake: 0.007 },
-    // 3: Ominous slow push-in toward the sealed crimson Nível -2 hatch humming under the complex
-    { pos: [12.0, 3.2, 5.2], lookAt: [12.0, 0.8, 1.2], fov: 46, shake: 0.014 },
+    // 0: Heroic low-angle push as survivor bursts through the iron North Gate onto the lit asphalt road
+    { pos: [123.4, 1.65, -14.8], lookAt: [120.0, 1.45, -9.6], fov: 62, shake: 0.01 },
+    // 1: Dramatic whip-pan toward the slamming iron gate as P. Drizzy charges and pounds furiously on the bars
+    { pos: [117.2, 1.95, -13.6], lookAt: [120.0, 1.65, -9.4], fov: 50, shake: 0.022 },
+    // 2: Wide exterior crane framing the street lamps, pine trees & survivor sprinting to the waiting getaway car
+    { pos: [114.5, 2.7, -18.5], lookAt: [121.8, 1.2, -22.2], fov: 58, shake: 0.008 },
+    // 3: Pull-back over the moonlit asphalt road as the getaway car headlights illuminate the escape
+    { pos: [118.5, 3.1, -27.5], lookAt: [120.8, 1.4, -15.5], fov: 54, shake: 0.006 },
   ],
   steps: [
     {
@@ -275,24 +332,38 @@ export const ENDING_GOOD_CUTSCENE: CutsceneDefinition = {
 };
 
 /**
- * REAL ENDING — "Resgate no Nível -2"
- * Cortando o lacre do Alçapão Blindado Vermelho após ouvir Vigia Marcos vivo no rádio e descendo ao Nível -2.
+ * REAL ENDING — "Resgate no Subsolo / Túnel de Fuga"
+ * Dedicated enclosed 3D illuminated subterranean escape tunnel + exterior rescue stairs & rescue van
+ * (x=120, y=-4..0, z=14) — ZERO void!
  */
 export const ENDING_REAL_CUTSCENE: CutsceneDefinition = {
   id: 'ending_real',
-  chapterTitle: 'FINAL REAL — RESGATE NO NÍVEL -2',
-  subtitle: 'Escotilha Blindada Aberta • Descida ao Laboratório Ômega',
+  chapterTitle: 'FINAL REAL — TÚNEL DE FUGA & RESGATE',
+  subtitle: 'Galeria Subterrânea • Saída de Emergência & Resgate do Marcos',
   showSurvivor: true,
   diddyBackdropSteps: [2],
+  anchors: {
+    setId: 'basement_tunnel',
+    floor: -1,
+    groundY: -4.0,
+    bounds: { minX: 110, maxX: 130, minZ: 0, maxZ: 28 },
+    survivorStart: [120, -4.0, 21.5],
+    survivorEnd: [120, -4.0, 7.2],
+    survivorFacingYaw: Math.PI,
+    diddyStart: [120, -4.0, 25.5],
+    diddyEnd: [120, -4.0, 19.5],
+    diddyFacingYaw: Math.PI,
+    vehiclePos: [120, -4.0, 3.8],
+  },
   cameras: [
-    // 0: Tight tactical shot on the crimson armored Level -2 hatch as the wire cutters snap the heavy lock
-    { pos: [gridToWorld(16.6), 1.45, gridToWorld(4.9)], lookAt: [gridToWorld(17.5), 0.45, gridToWorld(3.8)], fov: 54, shake: 0.018 },
-    // 1: Orbital push as the pressurized red hatch swings upward releasing subterranean vapor
-    { pos: [gridToWorld(18.7), 1.85, gridToWorld(4.7)], lookAt: [gridToWorld(17.5), 0.72, gridToWorld(3.8)], fov: 60, shake: 0.014 },
-    // 2: Tense whip-pan down the North Wing corridor as P. Drizzy roars too late to stop the descent
-    { pos: [gridToWorld(17.5), 1.75, gridToWorld(4.2)], lookAt: [gridToWorld(14.0), 1.7, gridToWorld(8.5)], fov: 48, shake: 0.026 },
-    // 3: Dramatic vertical crane descending straight into the illuminated stairwell of Level -2
-    { pos: [gridToWorld(17.5), 2.3, gridToWorld(3.8)], lookAt: [gridToWorld(17.5), -1.8, gridToWorld(3.6)], fov: 66, shake: 0.012 },
+    // 0: Tactical tracking shot inside the illuminated concrete escape tunnel as survivor sprints ahead
+    { pos: [122.4, -2.2, 18.2], lookAt: [120.0, -2.7, 21.2], fov: 58, shake: 0.014 },
+    // 1: Dramatic low angle looking down the glowing emergency bulkhead lights toward the exit ramp
+    { pos: [117.6, -2.1, 13.5], lookAt: [120.0, -2.5, 6.2], fov: 60, shake: 0.012 },
+    // 2: Tense whip-pan back toward the sealed blast bulkhead as P. Drizzy roars behind the bars
+    { pos: [118.4, -2.15, 14.8], lookAt: [120.0, -2.1, 20.5], fov: 48, shake: 0.024 },
+    // 3: Wide heroic shot of the surface rescue bay & emergency van beacons welcoming the survivors
+    { pos: [124.2, -1.6, 8.8], lookAt: [120.0, -2.6, 4.2], fov: 62, shake: 0.008 },
   ],
   steps: [
     {
@@ -343,25 +414,38 @@ export const ENDING_REAL_CUTSCENE: CutsceneDefinition = {
 };
 
 /**
- * SECRET ENDING — "Dossiê Ômega Exposto"
- * Vazando os arquivos confidenciais do Projeto Ômega no Terminal Ômega, revelando a origem de P. Drizzy
- * e o acobertamento do Diretor Artur Neves antes de escapar do complexo.
+ * SECRET ENDING — "Heliponto Ômega — Evacuação Aérea"
+ * Dedicated floodlit elevated 3D Helipad platform (x=180, y=6, z=14) with animated 3D Helicopter
+ * (spinning rotors + strobe beacons), safety railings & perimeter floodlights — ZERO void!
  */
 export const ENDING_SECRET_CUTSCENE: CutsceneDefinition = {
   id: 'ending_secret',
-  chapterTitle: 'FINAL SECRETO — DOSSIÊ ÔMEGA EXPOSTO',
-  subtitle: 'Terminal Ômega Decodificado • Verdade Transmitida ao Exterior',
+  chapterTitle: 'FINAL SECRETO — EVACUAÇÃO DO HELIPONTO ÔMEGA',
+  subtitle: 'Dossiê Ômega Transmitido • Decolagem sob Holofotes',
   showSurvivor: true,
   diddyBackdropSteps: [2],
+  anchors: {
+    setId: 'helipad_roof',
+    floor: 0,
+    groundY: 6.0,
+    bounds: { minX: 166, maxX: 194, minZ: 0, maxZ: 28 },
+    survivorStart: [180, 6.0, 22.8],
+    survivorEnd: [180, 6.0, 14.5],
+    survivorFacingYaw: Math.PI,
+    diddyStart: [180, 6.0, 25.8],
+    diddyEnd: [180, 6.0, 22.0],
+    diddyFacingYaw: Math.PI,
+    vehiclePos: [180, 6.0, 12.2],
+  },
   cameras: [
-    // 0: Close dramatic dolly into the glowing Terminal Ômega CRT bank in the basement
-    { pos: [gridToWorld(24.2), -2.05, gridToWorld(5.3)], lookAt: [gridToWorld(25.5), -2.25, gridToWorld(4.2)], fov: 50, shake: 0.01 },
-    // 1: Slow orbital arc around the survivor as encrypted Project Omega dossiers stream to external frequencies
-    { pos: [gridToWorld(26.7), -1.8, gridToWorld(5.6)], lookAt: [gridToWorld(25.2), -2.15, gridToWorld(4.2)], fov: 56, shake: 0.008 },
-    // 2: Sudden intense cut to the basement tunnel where P. Drizzy roars as emergency alarms purge the sector
-    { pos: [gridToWorld(23.2), -1.9, gridToWorld(6.4)], lookAt: [gridToWorld(19.5), -1.95, gridToWorld(9.8)], fov: 48, shake: 0.028 },
-    // 3: Triumphant high wide shot beyond the open North Gate under the night sky as the leak finishes
-    { pos: [12.0, 2.75, -1.6], lookAt: [12.0, 1.6, 4.5], fov: 64, shake: 0.006 },
+    // 0: Heroic floodlit establishing shot of the glowing H helipad & spinning 3D rescue helicopter
+    { pos: [187.5, 8.6, 21.5], lookAt: [180.0, 7.6, 13.0], fov: 58, shake: 0.01 },
+    // 1: Low orbital tracking arc as the survivor sprints across the helipad deck toward the chopper
+    { pos: [173.8, 7.7, 17.6], lookAt: [180.0, 7.4, 14.2], fov: 56, shake: 0.012 },
+    // 2: Tense whip-pan toward the helipad access gate as P. Drizzy roars against the fenced perimeter
+    { pos: [176.2, 7.9, 18.0], lookAt: [180.0, 7.8, 22.6], fov: 48, shake: 0.024 },
+    // 3: Cinematic ascending crane as the strobe-lit helicopter lifts off over the Sector 09 night fog
+    { pos: [188.5, 11.4, 23.2], lookAt: [180.0, 9.2, 12.2], fov: 62, shake: 0.014 },
   ],
   steps: [
     {
