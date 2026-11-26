@@ -150,6 +150,224 @@ export function createSculptedSurvivorCharacterRig(_pack: MaterialPack): THREE.G
   return root;
 }
 
+export interface SculptedArticulatedSurvivorRig {
+  root: THREE.Group;
+  pelvis: THREE.Group;
+  torso: THREE.Group;
+  head: THREE.Group;
+  leftArm: THREE.Group;
+  leftForeArm: THREE.Group;
+  rightArm: THREE.Group;
+  rightForeArm: THREE.Group;
+  leftLeg: THREE.Group;
+  leftShin: THREE.Group;
+  rightLeg: THREE.Group;
+  rightShin: THREE.Group;
+  heldItemGroup: THREE.Group;
+}
+
+/**
+ * High-Density Sculpted Articulated Micro-Voxel Survivor Rig (11 VoxelSculptor parts with Baked Vertex AO):
+ * Replaces blocky box dummies across Multiplayer Allies & Cutscenes with the exact sculpted
+ * windbreaker hood, zipper, chest straps, brass buckles, backpack, digital tactical watch,
+ * cargo knee pads, laced boots, expressive micro-voxel face & layered hair of the flagship protagonist!
+ */
+export function createSculptedArticulatedSurvivorRig(jacketHex = 0x254873): SculptedArticulatedSurvivorRig {
+  const root = new THREE.Group();
+  const s = 0.044;
+  const keyPrefix = `char_art_surv_${jacketHex.toString(16)}`;
+  const jacketDark = ((jacketHex >> 1) & 0x7f7f7f) | 0x0a1420;
+
+  // 1. Pelvis & Tactical Utility Belt (brass buckle + side belt pouch)
+  const pelvis = new THREE.Group();
+  pelvis.position.set(0, 0.72, 0);
+  root.add(pelvis);
+
+  const pelvisMesh = createSculptedMesh(`${keyPrefix}_pelvis`, () => {
+    const v = new VoxelSculptor(14, 5, 10, s);
+    v.fillBeveledBox(1, 0, 2, 12, 3, 7, 0x1a1e26, VoxelMat.Fabric, 'horizontal');
+    v.fillBox(0, 2, 2, 13, 3, 8, 0x181512, VoxelMat.Fabric); // tactical leather belt
+    v.fillBox(6, 2, 8, 7, 3, 8, 0xd97706, VoxelMat.Metal); // brass buckle
+    v.fillBox(2, 1, 8, 4, 3, 9, 0x292524, VoxelMat.Fabric); // front belt pouch
+    v.fillBox(10, 1, 8, 11, 2, 8, 0x334155, VoxelMat.Metal); // utility carabiner
+    return v.build({ anchor: [7, 2, 5] }).geometry;
+  });
+  pelvis.add(pelvisMesh);
+
+  // 2. Sculpted Hooded Windbreaker Torso + Open Zipper + Chest Straps + Rugged Field Backpack
+  const torso = new THREE.Group();
+  torso.position.set(0, 0.08, 0);
+  pelvis.add(torso);
+
+  const torsoMesh = createSculptedMesh(`${keyPrefix}_torso`, () => {
+    const v = new VoxelSculptor(16, 16, 14, s);
+    // Main beveled windbreaker torso
+    v.fillBeveledBox(2, 0, 5, 13, 12, 10, jacketHex, VoxelMat.Fabric, 'vertical');
+    v.fillBox(2, 0, 5, 13, 1, 10, jacketDark, VoxelMat.Fabric); // lower hem pleat
+    v.fillBox(3, 2, 10, 5, 4, 11, jacketDark, VoxelMat.Fabric); // pocket L
+    v.fillBox(10, 2, 10, 12, 4, 11, jacketDark, VoxelMat.Fabric); // pocket R
+    // Open zipper placket + metallic zipper teeth
+    v.fillBox(6, 1, 10, 9, 11, 10, 0x1c212b, VoxelMat.Fabric);
+    v.fillBox(6, 1, 10, 6, 11, 10, 0x94a3b8, VoxelMat.Metal);
+    v.fillBox(9, 1, 10, 9, 11, 10, 0x94a3b8, VoxelMat.Metal);
+    // Crossing backpack shoulder straps + sternum buckle + glowing cyan beacon
+    v.fillBox(4, 1, 10, 5, 12, 11, 0x2c303a, VoxelMat.Fabric);
+    v.fillBox(10, 1, 10, 11, 12, 11, 0x2c303a, VoxelMat.Fabric);
+    v.fillBox(5, 6, 11, 10, 6, 11, 0x1e222b, VoxelMat.Fabric);
+    v.fillBox(7, 6, 11, 8, 6, 11, 0xd97706, VoxelMat.Metal);
+    v.set(4, 9, 11, 0x38bdf8, VoxelMat.Emissive);
+    // Draped jacket hood & high collar
+    v.fillBeveledBox(3, 10, 3, 12, 13, 6, jacketDark, VoxelMat.Fabric, 'top');
+    v.fillBox(4, 11, 4, 11, 13, 5, 0x152c47, VoxelMat.Fabric);
+    v.fillBox(4, 12, 6, 11, 13, 9, jacketHex, VoxelMat.Fabric);
+    v.clear(6, 12, 9); v.clear(7, 12, 9); v.clear(8, 12, 9); v.clear(9, 12, 9);
+    // Rugged field backpack + pockets + brass clasps + rolled sleeping mat
+    v.fillBeveledBox(3, 1, 0, 12, 10, 4, 0x3b4252, VoxelMat.Fabric, 'all');
+    v.fillBox(4, 2, 0, 11, 5, 1, 0x4c566a, VoxelMat.Fabric);
+    v.fillBox(4, 8, 0, 11, 10, 2, 0x2e3440, VoxelMat.Fabric);
+    v.set(5, 7, 0, 0xd97706, VoxelMat.Metal);
+    v.set(10, 7, 0, 0xd97706, VoxelMat.Metal);
+    v.fillBox(3, 0, 1, 12, 1, 3, 0x5c4033, VoxelMat.Fabric);
+    return v.build({ anchor: [8, 0, 8] }).geometry;
+  });
+  torso.add(torsoMesh);
+
+  // 3. Sculpted Micro-Voxel Head (jaw, ears, nose, expressive eyes, brows, layered tousled hair & fringe)
+  const head = new THREE.Group();
+  head.position.set(0, 0.56, 0);
+  torso.add(head);
+
+  const headMesh = createSculptedMesh(`${keyPrefix}_head`, () => {
+    const v = new VoxelSculptor(12, 12, 10, s);
+    // Neck
+    v.fillBox(4, 0, 3, 7, 2, 6, 0xc99672, VoxelMat.Matte);
+    // Head volume + ears + nose
+    v.fillBeveledBox(2, 2, 2, 9, 8, 7, 0xd8a682, VoxelMat.Matte, 'all');
+    v.fillBox(3, 2, 3, 8, 2, 7, 0xc99672, VoxelMat.Matte);
+    v.set(1, 4, 4, 0xc99672, VoxelMat.Matte);
+    v.set(1, 5, 4, 0xc99672, VoxelMat.Matte);
+    v.set(10, 4, 4, 0xc99672, VoxelMat.Matte);
+    v.set(10, 5, 4, 0xc99672, VoxelMat.Matte);
+    v.set(5, 4, 8, 0xdfb18f, VoxelMat.Matte);
+    v.set(6, 4, 8, 0xdfb18f, VoxelMat.Matte);
+    // Expressive eyes, brows & mouth
+    v.fillBox(3, 6, 7, 4, 6, 7, 0x2b1d14, VoxelMat.Matte);
+    v.fillBox(7, 6, 7, 8, 6, 7, 0x2b1d14, VoxelMat.Matte);
+    v.set(3, 5, 7, 0xf8fafc, VoxelMat.Matte);
+    v.set(4, 5, 7, 0x1e293b, VoxelMat.Matte);
+    v.set(7, 5, 7, 0x1e293b, VoxelMat.Matte);
+    v.set(8, 5, 7, 0xf8fafc, VoxelMat.Matte);
+    v.fillBox(5, 3, 7, 6, 3, 7, 0x9a684e, VoxelMat.Matte);
+    // Layered tousled dark brown hair + sideburns + swept front fringe
+    v.fillBeveledBox(2, 7, 1, 9, 10, 7, 0x291c15, VoxelMat.Fabric, 'top');
+    v.fillBox(2, 3, 1, 9, 7, 2, 0x211610, VoxelMat.Fabric);
+    v.fillBox(2, 5, 2, 2, 7, 6, 0x291c15, VoxelMat.Fabric);
+    v.fillBox(9, 5, 2, 9, 7, 6, 0x291c15, VoxelMat.Fabric);
+    v.fillBox(3, 7, 7, 5, 8, 8, 0x33231a, VoxelMat.Fabric);
+    v.fillBox(6, 8, 7, 8, 8, 8, 0x291c15, VoxelMat.Fabric);
+    v.set(4, 7, 8, 0x3c291f, VoxelMat.Fabric);
+    return v.build({ anchor: [6, 1, 5] }).geometry;
+  });
+  head.add(headMesh);
+
+  // Helper for sculpted upper arm & elbow-jointed forearm + fingerless glove + watch (left)
+  const buildArm = (isLeft: boolean): { upper: THREE.Group; fore: THREE.Group } => {
+    const upper = new THREE.Group();
+    upper.position.set(isLeft ? -0.31 : 0.31, 0.49, 0);
+    const upperMesh = createSculptedMesh(`${keyPrefix}_uarm_${isLeft ? 'l' : 'r'}`, () => {
+      const v = new VoxelSculptor(5, 8, 6, s);
+      v.fillBeveledBox(0, 4, 1, 4, 7, 4, jacketHex, VoxelMat.Fabric, 'top'); // shoulder cap
+      v.fillBox(0, 0, 1, 4, 4, 4, jacketDark, VoxelMat.Fabric); // bicep sleeve + elbow crease
+      return v.build({ anchor: [2, 6, 3] }).geometry;
+    });
+    upper.add(upperMesh);
+
+    const fore = new THREE.Group();
+    fore.position.set(0, -0.26, 0);
+    const foreMesh = createSculptedMesh(`${keyPrefix}_farm_${isLeft ? 'l' : 'r'}`, () => {
+      const v = new VoxelSculptor(5, 8, 6, s);
+      v.fillBox(0, 4, 1, 4, 7, 4, jacketHex, VoxelMat.Fabric); // forearm sleeve
+      v.fillBox(0, 3, 1, 4, 3, 4, 0x181c24, VoxelMat.Fabric); // ribbed cuff
+      if (isLeft) {
+        v.fillBox(0, 3, 4, 4, 3, 5, 0x334155, VoxelMat.Metal);
+        v.set(2, 3, 5, 0x38bdf8, VoxelMat.Emissive); // glowing tactical wristwatch
+      }
+      v.fillBox(0, 1, 1, 4, 2, 4, 0x1f242d, VoxelMat.Fabric); // fingerless tactical glove
+      v.fillBox(0, 0, 1, 4, 0, 4, 0xd8a682, VoxelMat.Matte); // fingers
+      return v.build({ anchor: [2, 7, 3] }).geometry;
+    });
+    fore.add(foreMesh);
+    upper.add(fore);
+    return { upper, fore };
+  };
+
+  const armL = buildArm(true);
+  torso.add(armL.upper);
+  const armR = buildArm(false);
+  torso.add(armR.upper);
+
+  const heldItemGroup = new THREE.Group();
+  heldItemGroup.position.set(0, -0.31, 0.1);
+  armR.fore.add(heldItemGroup);
+
+  // Helper for sculpted thigh (cargo pants + pocket) & knee-jointed shin + laced boot
+  const buildLeg = (isLeft: boolean): { thigh: THREE.Group; shin: THREE.Group } => {
+    const thigh = new THREE.Group();
+    thigh.position.set(isLeft ? -0.12 : 0.12, -0.02, 0);
+    const thighMesh = createSculptedMesh(`${keyPrefix}_thigh_${isLeft ? 'l' : 'r'}`, () => {
+      const v = new VoxelSculptor(6, 9, 6, s);
+      v.fillBox(1, 0, 1, 4, 8, 4, 0x262d3a, VoxelMat.Fabric);
+      // Side cargo pocket flap + metallic snap
+      const sideX = isLeft ? 0 : 5;
+      v.fillBox(sideX, 2, 1, sideX, 5, 4, 0x1d232e, VoxelMat.Fabric);
+      v.set(sideX, 5, 2, 0x94a3b8, VoxelMat.Metal);
+      // Knee reinforcement pad
+      v.fillBox(1, 0, 4, 4, 2, 5, 0x1f2632, VoxelMat.Fabric);
+      return v.build({ anchor: [3, 8, 3] }).geometry;
+    });
+    thigh.add(thighMesh);
+
+    const shin = new THREE.Group();
+    shin.position.set(0, -0.35, 0);
+    const shinMesh = createSculptedMesh(`${keyPrefix}_shin_${isLeft ? 'l' : 'r'}`, () => {
+      const v = new VoxelSculptor(6, 9, 8, s);
+      v.fillBox(1, 4, 1, 4, 8, 4, 0x262d3a, VoxelMat.Fabric); // lower trouser
+      v.fillBeveledBox(1, 1, 1, 4, 3, 5, 0x1e222b, VoxelMat.Fabric, 'top'); // tactical boot upper
+      v.fillBox(1, 0, 1, 4, 0, 6, 0x111318, VoxelMat.Matte); // treaded sole
+      v.fillBox(1, 1, 5, 4, 1, 6, 0xd4d4d8, VoxelMat.Matte); // rubber toe cap stripe
+      v.set(2, 2, 5, 0x94a3b8, VoxelMat.Metal); // metallic lace eyelets
+      v.set(3, 2, 5, 0x94a3b8, VoxelMat.Metal);
+      v.set(2, 3, 4, 0x94a3b8, VoxelMat.Metal);
+      v.set(3, 3, 4, 0x94a3b8, VoxelMat.Metal);
+      return v.build({ anchor: [3, 8, 3] }).geometry;
+    });
+    shin.add(shinMesh);
+    thigh.add(shin);
+    return { thigh, shin };
+  };
+
+  const legL = buildLeg(true);
+  pelvis.add(legL.thigh);
+  const legR = buildLeg(false);
+  pelvis.add(legR.thigh);
+
+  return {
+    root,
+    pelvis,
+    torso,
+    head,
+    leftArm: armL.upper,
+    leftForeArm: armL.fore,
+    rightArm: armR.upper,
+    rightForeArm: armR.fore,
+    leftLeg: legL.thigh,
+    leftShin: legL.shin,
+    rightLeg: legR.thigh,
+    rightShin: legR.shin,
+    heldItemGroup,
+  };
+}
+
 /**
  * 2. VIGIA MARCOS (Guarda de Segurança Noturno — Guarita do Setor 09)
  * Navy security uniform with metallic brass badge, peaked security cap + emblem,

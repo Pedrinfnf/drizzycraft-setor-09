@@ -100,6 +100,8 @@ export function compute3DProximityDistance(
   return best;
 }
 
+export const DIDDY_COLLISION_RADIUS = 0.35;
+
 const CONTEXT_RAY_COUNT = 12;
 const CONTEXT_COS = Array.from({ length: CONTEXT_RAY_COUNT }, (_, i) =>
   Math.cos((i * Math.PI * 2) / CONTEXT_RAY_COUNT)
@@ -581,6 +583,8 @@ export class DiddyAiController {
   private perceptionQueue: Array<{ time: number; node: PathNode }> = [];
   private lkpSearchTimer = 0;
   private lkpSearchBaseYaw = 0;
+  private stuckTimerSec = 0;
+  private slideSign = 1;
   private vx = 0;
   private vz = 0;
 
@@ -1099,7 +1103,7 @@ export class DiddyAiController {
           this.z,
           mx,
           mz,
-          0.42,
+          DIDDY_COLLISION_RADIUS,
           true,
           false
         );
@@ -1114,9 +1118,35 @@ export class DiddyAiController {
         }
 
         const movedDist = Math.hypot(this.x - prevX, this.z - prevZ);
-        if (stepLen > 0.02 && movedDist < stepLen * 0.14) {
-          this.path = [];
-          this.pathRecalcTimer = 0.22;
+        const actualSpeed = dt > 1e-4 ? movedDist / dt : 0;
+        if (actualSpeed < 0.08 && stepLen > 0.005) {
+          this.stuckTimerSec += dt;
+          if (this.stuckTimerSec >= 0.6) {
+            // Smooth tangential slide recovery (NEVER sudden teleport!)
+            const tangX = -steered.dirZ * this.slideSign * moveSpeed * dt * 0.85;
+            const tangZ = steered.dirX * this.slideSign * moveSpeed * dt * 0.85;
+            const slid = resolveWorldMovement(
+              layout,
+              this.x,
+              this.y,
+              this.z,
+              tangX,
+              tangZ,
+              DIDDY_COLLISION_RADIUS,
+              true,
+              false
+            );
+            this.x = slid.x;
+            this.y = slid.y;
+            this.z = slid.z;
+            this.floor = slid.floor;
+            this.slideSign *= -1;
+            this.stuckTimerSec = 0;
+            this.path = [];
+            this.pathRecalcTimer = 0.18;
+          }
+        } else {
+          this.stuckTimerSec = Math.max(0, this.stuckTimerSec - dt * 2.0);
         }
 
         this.stepDistAccum += movedDist;

@@ -56,6 +56,12 @@ import {
   createSculptedSurvivorCharacterRig,
   createVigiaMarcosRig,
 } from './characterModels';
+import {
+  createToolViewModel,
+  createToolWorldModel,
+  MICRO_VOXEL_TOOL_IDS,
+  type MicroVoxelToolId,
+} from './microVoxelProps';
 
 export { createOmegaDirectorRig, createOmegaScientistRig, createVigiaMarcosRig };
 
@@ -891,7 +897,26 @@ export function createHidingSpotVisual(def: HidingSpotDefinition, pack: Material
  * Uses discrete 3D VoxelSculptor grids with Greedy Meshing, Hidden Face Culling & Baked Vertex AO.
  * Pass `standalone = true` for camera-mounted 1st-person viewmodel tools so they are never disposed by world rebuilds.
  */
+const MICRO_VOXEL_TOOL_SET = new Set<string>(MICRO_VOXEL_TOOL_IDS);
+
 export function createVoxelItemModel(itemType: WorldPickupType, standalone = false): THREE.Group {
+  if (MICRO_VOXEL_TOOL_SET.has(itemType)) {
+    return standalone
+      ? createToolViewModel(itemType as MicroVoxelToolId)
+      : createToolWorldModel(itemType as MicroVoxelToolId);
+  }
+  if (itemType === 'garage_key' || itemType === 'cell_key' || itemType === 'lockpick') {
+    return createSculptedItemModel(
+      itemType === 'garage_key' ? 'master_key' : itemType === 'cell_key' ? 'basement_key' : 'crowbar_hook',
+      standalone
+    );
+  }
+  if (itemType === 'medkit' || itemType === 'freq_pills' || itemType === 'emblem_sun' || itemType === 'emblem_moon') {
+    return createSculptedItemModel(
+      itemType === 'medkit' ? 'stun_cell' : itemType === 'freq_pills' ? 'battery' : 'flare',
+      standalone
+    );
+  }
   return createSculptedItemModel(itemType, standalone);
 }
 
@@ -1041,6 +1066,18 @@ export function createHeldItemViewmodelRig(
     'wire_cutters',
     'master_key',
     'flare',
+    'oil_can',
+    'alarm_clock',
+    'polaroid_camera',
+    'lockpick',
+    'cell_key',
+    'medkit',
+    'gas_can',
+    'car_battery',
+    'garage_key',
+    'freq_pills',
+    'emblem_sun',
+    'emblem_moon',
   ];
 
   const models = {} as Record<ItemType, THREE.Group>;

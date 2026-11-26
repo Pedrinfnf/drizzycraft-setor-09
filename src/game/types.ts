@@ -165,7 +165,7 @@ export interface GameSettings {
   graphicsQuality: GraphicsQuality;
   locale: {
     language: Language;
-    dubbing: boolean; // Voice dubbing (speechSynthesis) on/off
+    dubbing: boolean; // Neural tape audio & voiceover dubbing on/off
     subtitleBgOpacity: number; // 0..1
   };
   audio: {
@@ -621,7 +621,11 @@ export interface InteractPrompt {
     | 'secret_terminal'
     | 'level2_hatch'
     | 'uv_mark'
-    | 'light_switch';
+    | 'light_switch'
+    | 'garage_car'
+    | 'false_bookshelf'
+    | 'piano'
+    | 'steam_valve';
   accent?: 'default' | 'red' | 'blue' | 'amber' | 'emerald' | 'purple';
 }
 

@@ -15,7 +15,7 @@ export type { MatchPhase, PlayerLifeState };
 
 export const SERVER_TICK_MS = 10;
 export const SERVER_TICK_SEC = 0.01;
-export const SERVER_MAX_FRAME_DT = 0.1; // Clamp accumulator dt so mobile never spirals
+export const SERVER_MAX_FRAME_DT = 0.05; // Strict 50ms clamp eliminates teleportation on Host FPS/network spikes
 export const BROADCAST_INTERVAL_TICKS = 3; // 33.3Hz compact delta broadcast
 export const SELF_HEAL_SNAPSHOT_TICKS = 200; // Full reconciliation snapshot every 2.0s
 export const LAG_COMP_HISTORY_TICKS = 30; // 300ms hitbox lag-compensation ring buffer

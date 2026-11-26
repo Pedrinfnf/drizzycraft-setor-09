@@ -48,7 +48,32 @@ import {
 } from './saveSystem';
 import { GameServer } from './server/GameServer';
 import type { CompactDeltaPacket, GameWorldState } from './server/types';
-import { ClientInputPredictor } from '../network/MultiplayerClient';
+import { ClientInputPredictor, DrizzyInterpolationBuffer } from '../network/MultiplayerClient';
+import { i18nStore } from '../i18n/i18n';
+import { tapeAudioPlayer } from '../audio/TapeAudioPlayer';
+import {
+  createChandelierRig,
+  createFalseBookshelfRig,
+  createFireplaceRig,
+  createFourStageFinalGateRig,
+  createGarageEscapeCarRig,
+  createGrandfatherClockRig,
+  createInteractivePianoRig,
+  createOuterGardenProps,
+  createSecretAtticProps,
+  createSecurityBunkerSetpiece,
+  createSteamValvesRig,
+  createToolShedRig,
+  type FalseBookshelfRig,
+  type FourStageFinalGateRig,
+  type GarageEscapeCarRig,
+  type InteractivePianoRig,
+  type OuterGardenRig,
+  type SecretAtticRig,
+  type SecurityBunkerRig,
+  type SteamValvesRig,
+  type ToolShedRig,
+} from './microVoxelProps';
 import {
   BASEMENT_CEILING_H,
   CELL_COURTYARD,
@@ -447,6 +472,7 @@ export class HorrorEngine {
   private creakCooldownSec = 0;
   private finalGateSirenSec = 0;
   private isRemoteClient = false;
+  private remoteDiddyInterp = new DrizzyInterpolationBuffer(100, 32);
   private remoteDiddyTarget = {
     x: 0,
     y: FLOOR_0_Y,
@@ -456,6 +482,31 @@ export class HorrorEngine {
     state: 'patrol' as import('./types').DiddyAiState,
     initialized: false,
   };
+  private windowRimLight!: THREE.DirectionalLight;
+  private fireplaceGlowLight: THREE.PointLight | null = null;
+  private bunkerCrtGlowLight: THREE.PointLight | null = null;
+  private bunkerSetpieceRig: SecurityBunkerRig | null = null;
+  private garageCarRig: GarageEscapeCarRig | null = null;
+  private toolShedRig: ToolShedRig | null = null;
+  private outerGardenRig: OuterGardenRig | null = null;
+  private secretAtticRig: SecretAtticRig | null = null;
+  private chandelierRig: ReturnType<typeof createChandelierRig> | null = null;
+  private fireplaceRig: ReturnType<typeof createFireplaceRig> | null = null;
+  private grandfatherClockRig: ReturnType<typeof createGrandfatherClockRig> | null = null;
+  private falseBookshelfRig: FalseBookshelfRig | null = null;
+  private interactivePianoRig: InteractivePianoRig | null = null;
+  private steamValvesRig: SteamValvesRig | null = null;
+  private fourStageFinalGateRig: FourStageFinalGateRig | null = null;
+  private garageBatteryInstalled = false;
+  private garageFuelInstalled = false;
+  private bookshelfSunInstalled = false;
+  private bookshelfMoonInstalled = false;
+  private bookshelfOpened = false;
+  private pianoSequenceStep = 0;
+  private steamValvesClosed: [boolean, boolean, boolean] = [false, false, false];
+  private oiledDoors = new Set<string>();
+  private polaroidCooldownSec = 0;
+  private unsubI18n: (() => void) | null = null;
   private cutsceneSets: DedicatedCutsceneSetsRig | null = null;
   private cutsceneSurvivorRig: ArticulatedPeerRig | null = null;
   public onWorldSyncEvent:
@@ -693,13 +744,18 @@ export class HorrorEngine {
     this.cctvFillLight.visible = false;
     this.scene.add(this.cctvFillLight);
 
-    // Midnight-Blue Night Lighting Rig (balanced so flashlight & lamps stand out naturally)
-    this.hemiLight = new THREE.HemisphereLight(0x4c68a3, 0x151722, 0.56);
+    // Midnight-Blue Night Lighting Rig (balanced so Nightmare stays legible on OLED mobile displays)
+    this.hemiLight = new THREE.HemisphereLight(0x5272b8, 0x1b2133, 0.58);
     this.scene.add(this.hemiLight);
 
-    this.dirLight = new THREE.DirectionalLight(0x7aa2e3, 0.24);
+    this.dirLight = new THREE.DirectionalLight(0x7aa2e3, 0.28);
     this.dirLight.position.set(16, 28, 12);
     this.scene.add(this.dirLight);
+
+    // Cool-blue moonlight rim directional fill so architecture & silhouettes never crush to black
+    this.windowRimLight = new THREE.DirectionalLight(0x6e98ff, 0.42);
+    this.windowRimLight.position.set(-14, 18, -16);
+    this.scene.add(this.windowRimLight);
 
     // Dedicated Courtyard Moonlight Directional Light (crisp cool moonlit contrast against night sky!)
     this.moonLight = new THREE.DirectionalLight(0x8ab8ff, 1.08);
@@ -823,6 +879,9 @@ export class HorrorEngine {
 
     this.setBodyState('title');
     this.installQaBridge();
+    this.unsubI18n = i18nStore.subscribe(() => {
+      this.emitHud();
+    });
     this.emitHud();
     this.lastFrameMs = performance.now();
     this.scheduleNextFrame();
@@ -1730,7 +1789,18 @@ export class HorrorEngine {
       : Math.floor(Date.now() % 1000000) + 17;
     this.localPlayerId = localPlayerId;
     this.isRemoteClient = !runLocalServer;
+    this.remoteDiddyInterp.clear();
     this.remoteDiddyTarget.initialized = false;
+    this.garageBatteryInstalled = false;
+    this.garageFuelInstalled = false;
+    this.bookshelfSunInstalled = false;
+    this.bookshelfMoonInstalled = false;
+    this.bookshelfOpened = false;
+    this.pianoSequenceStep = 0;
+    this.steamValvesClosed = [false, false, false];
+    this.oiledDoors.clear();
+    this.polaroidCooldownSec = 0;
+    tapeAudioPlayer.stop(false);
     this.playerLifeState = 'ALIVE';
     this.bleedoutSec = 0;
     this.mpSpectating = false;
@@ -1930,6 +2000,16 @@ export class HorrorEngine {
       this.remoteDiddyTarget.yaw = dyaw;
       this.remoteDiddyTarget.floor = dfloor;
       this.remoteDiddyTarget.state = st;
+      this.remoteDiddyInterp.push({
+        x: dx,
+        y: dy,
+        z: dz,
+        yaw: dyaw,
+        floor: dfloor,
+        state: st,
+        timestamp: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+        tick: delta.t,
+      });
       if (!this.remoteDiddyTarget.initialized) {
         this.remoteDiddyTarget.initialized = true;
         this.ai.x = dx;
@@ -1984,6 +2064,16 @@ export class HorrorEngine {
       this.remoteDiddyTarget.yaw = snapshot.diddy.yaw;
       this.remoteDiddyTarget.floor = snapshot.diddy.floor;
       this.remoteDiddyTarget.state = snapshot.diddy.state;
+      this.remoteDiddyInterp.push({
+        x: snapshot.diddy.x,
+        y: snapshot.diddy.y,
+        z: snapshot.diddy.z,
+        yaw: snapshot.diddy.yaw,
+        floor: snapshot.diddy.floor,
+        state: snapshot.diddy.state,
+        timestamp: typeof performance !== 'undefined' ? performance.now() : Date.now(),
+        tick: snapshot.tick,
+      });
       if (!this.remoteDiddyTarget.initialized) {
         this.remoteDiddyTarget.initialized = true;
         this.ai.x = snapshot.diddy.x;
@@ -2713,9 +2803,140 @@ export class HorrorEngine {
       this.throwCan();
     } else if (activeItem === 'flare') {
       this.useFlare();
+    } else if (activeItem === 'polaroid_camera') {
+      this.usePolaroidCamera();
+    } else if (activeItem === 'oil_can') {
+      this.useOilCanOnNearestDoor();
+    } else if (activeItem === 'alarm_clock') {
+      this.useAlarmClockDistraction();
+    } else if (activeItem === 'freq_pills') {
+      this.useFreqPills();
+    } else if (activeItem === 'medkit') {
+      this.useMedkitSelf();
     } else {
       this.toggleUvMode();
     }
+  }
+
+  private usePolaroidCamera(): void {
+    if (this.polaroidCooldownSec > 0) {
+      this.showBanner(`Flash Polaroid recarregando (${Math.ceil(this.polaroidCooldownSec)}s)...`);
+      return;
+    }
+    this.audio.unlock();
+    this.polaroidCooldownSec = 8.0;
+    this.stunFlashTimer = 0.24;
+    this.triggerViewmodelAction('flashlight_click');
+    this.audio.playFlashlightClick();
+    this.emitNoise(this.px, this.py, this.pz, this.pFloor, 15, 2, 'stun_gun');
+
+    // Reveal nearby hidden clues within 9m
+    let revealedClue = false;
+    for (const clue of this.layout.clues) {
+      if (!clue.discovered && clue.floor === this.pFloor && Math.hypot(clue.x - this.px, clue.z - this.pz) < 9.0) {
+        clue.discovered = true;
+        revealedClue = true;
+      }
+    }
+
+    const diffCfg = getDifficultyConfig(this.difficulty);
+    if (diffCfg.diddyActive && this.ai.floor === this.pFloor) {
+      const dx = this.ai.x - this.px;
+      const dz = this.ai.z - this.pz;
+      const dist = Math.hypot(dx, dz);
+      const fwdX = -Math.sin(this.yaw);
+      const fwdZ = -Math.cos(this.yaw);
+      const dot = dist > 0.01 ? (dx * fwdX + dz * fwdZ) / dist : 1;
+      if (
+        dist <= 12.0 &&
+        dot >= 0.6 &&
+        hasWallLineOfSight(this.layout, this.px, this.pz, this.ai.x, this.ai.z, this.pFloor)
+      ) {
+        this.ai.stun(3.0);
+        this.runStunsApplied += 1;
+        this.spawnBurstParticles(this.scratchVecC.set(this.ai.x, this.ai.y + 1.55, this.ai.z), 0xffffff, 14, 0.05, 3.0);
+        this.showBanner('FLASH POLAROID! P. Drizzy cegado por 3s! Corra agora!');
+        this.emitHud();
+        return;
+      }
+    }
+    this.showBanner(
+      revealedClue
+        ? 'Flash Polaroid disparado! Uma pista oculta próxima foi revelada no Diário!'
+        : 'Flash Polaroid disparado! Mire no rosto do P. Drizzy (<12m) para cegá-lo por 3s.'
+    );
+    this.emitHud();
+  }
+
+  private useOilCanOnNearestDoor(): void {
+    let nearestDoor: DoorDefinition | null = null;
+    let bestD = 3.2;
+    for (const door of this.layout.doors) {
+      if (door.floor !== this.pFloor || door.lockType === 'bunker_blast') continue;
+      const halfSpan = (door.spanCells || 2) * 0.5;
+      const cx = door.axis === 'x' ? (door.gx + halfSpan) * CELL_SIZE : (door.gx + 0.5) * CELL_SIZE;
+      const cz = door.axis === 'x' ? (door.gz + 0.5) * CELL_SIZE : (door.gz + halfSpan) * CELL_SIZE;
+      const d = Math.hypot(cx - this.px, cz - this.pz);
+      if (d < bestD) {
+        bestD = d;
+        nearestDoor = door;
+      }
+    }
+    if (!nearestDoor) {
+      this.showBanner('Aproxime-se de uma porta (<3m) para lubrificar as dobradiças.');
+      return;
+    }
+    if (this.oiledDoors.has(nearestDoor.id)) {
+      this.showBanner(`${nearestDoor.name} já está lubrificada (abertura 100% silenciosa).`);
+      return;
+    }
+    this.oiledDoors.add(nearestDoor.id);
+    this.triggerViewmodelAction('grab_reach');
+    this.audio.playFlashlightClick();
+    this.showBanner(`${nearestDoor.name} lubrificada com Óleo! Agora abre sem emitir ruído.`);
+    this.emitHud();
+  }
+
+  private useAlarmClockDistraction(): void {
+    this.audio.unlock();
+    this.inventory = this.inventory.filter((i) => i !== 'alarm_clock');
+    this.activeSlot = Math.max(0, Math.min(this.activeSlot, this.inventory.length - 1));
+    this.heldItemRig.setActiveItem(this.inventory[this.activeSlot] ?? 'flashlight');
+    this.triggerViewmodelAction('throw_toss');
+    const fwdX = -Math.sin(this.yaw);
+    const fwdZ = -Math.cos(this.yaw);
+    const landX = this.px + fwdX * 3.8;
+    const landZ = this.pz + fwdZ * 3.8;
+    const resolved = resolveWorldMovement(this.layout, this.px, this.py, this.pz, fwdX * 3.8, fwdZ * 3.8, 0.2, false, true);
+    this.audio.playDroppedObjectCrash('tin_cans');
+    this.emitNoise(resolved.x || landX, this.py, resolved.z || landZ, this.pFloor, 34, 4, 'thrown_object');
+    this.showBanner('Despertador acionado! O toque atraiu P. Drizzy para o local!');
+    this.emitHud();
+  }
+
+  private useFreqPills(): void {
+    this.inventory = this.inventory.filter((i) => i !== 'freq_pills');
+    this.activeSlot = Math.max(0, Math.min(this.activeSlot, this.inventory.length - 1));
+    this.heldItemRig.setActiveItem(this.inventory[this.activeSlot] ?? 'flashlight');
+    this.neuralInterference = 0;
+    this.stamina = Math.min(100, this.stamina + 35);
+    this.audio.playFlashlightClick();
+    this.showBanner('Supressor de Frequência tomado! Interferência Neural zerada (+35% estamina).');
+    this.emitHud();
+  }
+
+  private useMedkitSelf(): void {
+    if (this.health >= this.maxHealth) {
+      this.showBanner('Sua saúde já está no máximo!');
+      return;
+    }
+    this.inventory = this.inventory.filter((i) => i !== 'medkit');
+    this.activeSlot = Math.max(0, Math.min(this.activeSlot, this.inventory.length - 1));
+    this.heldItemRig.setActiveItem(this.inventory[this.activeSlot] ?? 'flashlight');
+    this.health = Math.min(this.maxHealth, this.health + 1);
+    this.audio.playFlashlightClick();
+    this.showBanner(`Kit Médico aplicado! Saúde restaurada (${this.health}/${this.maxHealth}).`);
+    this.emitHud();
   }
 
   private getContextualUseLabel(): string | null {
@@ -2729,6 +2950,23 @@ export class HorrorEngine {
     }
     if (activeItem === 'flare') {
       return `FLARE (${this.flares})`;
+    }
+    if (activeItem === 'polaroid_camera') {
+      return this.polaroidCooldownSec > 0
+        ? `FLASH (${Math.ceil(this.polaroidCooldownSec)}s)`
+        : 'FLASH POLAROID';
+    }
+    if (activeItem === 'oil_can') {
+      return 'LUBRIFICAR PORTA';
+    }
+    if (activeItem === 'alarm_clock') {
+      return 'SOLTAR ALARME';
+    }
+    if (activeItem === 'freq_pills') {
+      return 'TOMAR PÍLULAS';
+    }
+    if (activeItem === 'medkit') {
+      return 'CURAR (+1 HP)';
     }
     return this.uvMode ? 'LUZ NORMAL' : 'LUZ UV';
   }
@@ -3270,6 +3508,23 @@ export class HorrorEngine {
           vis.ledMat.emissive.setHex(0x16a34a);
         }
         this.audio.playCassettePlay();
+        // Play pre-generated neural MP3 dubbing via Web Audio analog cassette DSP (Bandpass + Saturation + Wow & Flutter + Tape Hiss)
+        const tapeNum: 1 | 2 =
+          tape.id.endsWith('2') || tape.id.endsWith('4') ? 2 : 1;
+        void tapeAudioPlayer.playTape(tapeNum, {
+          lang: this.settings.locale?.language ?? 'pt-BR',
+          volume:
+            this.settings.audio.muted
+              ? 0
+              : (this.settings.audio.master ?? 0.85) * (this.settings.audio.voiceTapes ?? 0.95),
+          onSubtitle: (line) => {
+            if (this.settings.audio.subtitles) {
+              this.subtitleText = line;
+              this.subtitleTimer = line ? 8.0 : 0;
+              this.emitHud();
+            }
+          },
+        });
         if (this.settings.audio.subtitles) {
           this.subtitleText = `${tape.title}: ${tape.transcript}`;
           this.subtitleTimer = 7.0;
@@ -3389,6 +3644,128 @@ export class HorrorEngine {
       this.audio.playCutsceneCue('hatch_hum');
       this.showBanner('ALÇAPÃO VERMELHO ABERTO! Descendo ao Nível -2 para resgatar o Vigia Marcos!');
       this.triggerRealEndingEscape();
+      return;
+    }
+
+    if (prompt.actionType === 'garage_car') {
+      if (!this.garageBatteryInstalled && this.inventory.includes('car_battery')) {
+        this.garageBatteryInstalled = true;
+        this.inventory = this.inventory.filter((i) => i !== 'car_battery');
+        this.activeSlot = Math.max(0, Math.min(this.activeSlot, this.inventory.length - 1));
+        this.heldItemRig.setActiveItem(this.inventory[this.activeSlot] ?? 'flashlight');
+        this.audio.playFuseSnapSpark();
+        this.showBanner('Bateria Automotiva instalada no carro da Garagem!');
+        this.emitHud();
+        return;
+      }
+      if (!this.garageFuelInstalled && this.inventory.includes('gas_can')) {
+        this.garageFuelInstalled = true;
+        this.inventory = this.inventory.filter((i) => i !== 'gas_can');
+        this.activeSlot = Math.max(0, Math.min(this.activeSlot, this.inventory.length - 1));
+        this.heldItemRig.setActiveItem(this.inventory[this.activeSlot] ?? 'flashlight');
+        this.audio.playWorkbenchCraft();
+        this.showBanner('Tanque abastecido com o Galão de Gasolina!');
+        this.emitHud();
+        return;
+      }
+      if (this.garageBatteryInstalled && this.garageFuelInstalled) {
+        if (this.inventory.includes('garage_key')) {
+          this.audio.playPowerRestore();
+          this.showBanner('MOTOR LIGADO! Fugindo da mansão pela Garagem Leste!');
+          this.triggerVictoryEscape();
+          return;
+        }
+        this.audio.playLockedRattle();
+        this.showBanner('Carro abastecido e com bateria! Falta apenas a Chave da Garagem para ligar!');
+        return;
+      }
+      this.audio.playLockedRattle();
+      const missing: string[] = [];
+      if (!this.garageBatteryInstalled) missing.push('Bateria de Carro');
+      if (!this.garageFuelInstalled) missing.push('Galão de Gasolina');
+      if (!this.inventory.includes('garage_key')) missing.push('Chave da Garagem');
+      this.showBanner(`Carro de Fuga incompleto — Falta: ${missing.join(', ')}.`);
+      return;
+    }
+
+    if (prompt.actionType === 'false_bookshelf') {
+      if (this.bookshelfOpened) {
+        this.showBanner('Estante Falsa aberta — acesso ao Arquivo do Dono liberado!');
+        return;
+      }
+      let installedAny = false;
+      if (!this.bookshelfSunInstalled && this.inventory.includes('emblem_sun')) {
+        this.bookshelfSunInstalled = true;
+        this.inventory = this.inventory.filter((i) => i !== 'emblem_sun');
+        installedAny = true;
+      }
+      if (!this.bookshelfMoonInstalled && this.inventory.includes('emblem_moon')) {
+        this.bookshelfMoonInstalled = true;
+        this.inventory = this.inventory.filter((i) => i !== 'emblem_moon');
+        installedAny = true;
+      }
+      if (installedAny) {
+        this.activeSlot = Math.max(0, Math.min(this.activeSlot, this.inventory.length - 1));
+        this.heldItemRig.setActiveItem(this.inventory[this.activeSlot] ?? 'flashlight');
+        this.audio.playKeyLockTurn();
+      }
+      if (this.bookshelfSunInstalled && this.bookshelfMoonInstalled) {
+        this.bookshelfOpened = true;
+        this.audio.playDoorCreak(true);
+        this.showBanner('ESTANTE FALSA DESLIZADA! Os Emblemas Sol e Lua revelaram o Arquivo do Dono!');
+      } else if (installedAny) {
+        this.showBanner('Emblema encaixado na Estante Falsa! Falta o segundo emblema (Sol/Lua).');
+      } else {
+        this.audio.playLockedRattle();
+        this.showBanner('Estante Falsa com encaixes Sol e Lua — procure os dois Emblemas na mansão.');
+      }
+      this.emitHud();
+      return;
+    }
+
+    if (prompt.actionType === 'piano') {
+      this.pianoSequenceStep = Math.min(3, this.pianoSequenceStep + 1);
+      if (this.interactivePianoRig) {
+        const keyIdx = (this.pianoSequenceStep * 2) % Math.max(1, this.interactivePianoRig.keyMeshes.length);
+        const keyMesh = this.interactivePianoRig.keyMeshes[keyIdx];
+        if (keyMesh) {
+          keyMesh.position.y = 0.785;
+          setTimeout(() => {
+            keyMesh.position.y = 0.805;
+          }, 220);
+        }
+      }
+      this.audio.playKeyJingle();
+      this.emitNoise(this.px, this.py, this.pz, this.pFloor, 14, 2, 'door');
+      if (this.pianoSequenceStep === 3) {
+        this.battery = Math.min(this.maxBattery, this.battery + 30);
+        this.showBanner('Acorde secreto tocado no Piano! Compartimento oculto liberou +30% de carga!');
+      } else {
+        this.showBanner(`Piano tocado (${this.pianoSequenceStep}/3 notas do acorde secreto)...`);
+      }
+      this.emitHud();
+      return;
+    }
+
+    if (prompt.actionType === 'steam_valve') {
+      const nextIdx = this.steamValvesClosed.findIndex((v) => !v);
+      if (nextIdx === -1) {
+        this.showBanner('Todas as 3 válvulas de vapor do Subsolo já foram fechadas!');
+        return;
+      }
+      this.steamValvesClosed[nextIdx] = true;
+      const closedCount = this.steamValvesClosed.filter(Boolean).length;
+      if (this.steamValvesRig?.valveWheels[nextIdx]) {
+        this.steamValvesRig.valveWheels[nextIdx].rotation.z += Math.PI * 1.5;
+      }
+      this.audio.playDoorCreak(true);
+      this.emitNoise(this.px, this.py, this.pz, this.pFloor, 15, 2, 'door');
+      this.showBanner(
+        closedCount === 3
+          ? 'PRESSÃO ESTABILIZADA (3/3)! O vapor escaldante da Câmara do Subsolo foi dissipado!'
+          : `Válvula de Vapor #${nextIdx + 1} fechada (${closedCount}/3)!`
+      );
+      this.emitHud();
       return;
     }
 
@@ -3774,6 +4151,7 @@ export class HorrorEngine {
     this.worldGroup.add(this.cutsceneSets.root);
 
     this.buildLivingPropsGlassAndDecals();
+    this.buildRemasterMicroVoxelSetpieces();
 
     const prof = getGraphicsProfile(this.settings.graphicsQuality);
     this.rebuildDustParticles(prof.dustParticleCount);
@@ -3783,6 +4161,80 @@ export class HorrorEngine {
       this.settings.video.waterQuality ?? 'high'
     );
     this.updateBunkerVisualIndicators();
+  }
+
+  /**
+   * Mounts all Update 2.0 High-Density Micro-Voxel 3D Setpieces, Wing Props,
+   * Puzzle Mechanisms & 4-Stage Final Gate directly into the active Chapter 1 scene!
+   */
+  private buildRemasterMicroVoxelSetpieces(): void {
+    const a = this.layout.remasterAnchors;
+
+    const mountFloor0 = (obj: THREE.Object3D, pos: { x: number; y: number; z: number }, rotY = 0) => {
+      obj.position.set(pos.x, pos.y, pos.z);
+      obj.rotation.y = rotY;
+      this.worldRegistry.trackObject3D(obj);
+      this.worldGroup.add(obj);
+      this.floor0Chunks.push(obj);
+    };
+    const mountBasement = (obj: THREE.Object3D, pos: { x: number; y: number; z: number }, rotY = 0) => {
+      obj.position.set(pos.x, pos.y, pos.z);
+      obj.rotation.y = rotY;
+      this.worldRegistry.trackObject3D(obj);
+      this.worldGroup.add(obj);
+      this.floorMinus1Chunks.push(obj);
+    };
+
+    // 1. Cabine 09-A Security Bunker Console + Diegetic CRT Green Glow
+    this.bunkerSetpieceRig = createSecurityBunkerSetpiece();
+    mountFloor0(this.bunkerSetpieceRig.root, a.bunkerConsole, 0);
+    this.bunkerCrtGlowLight = new THREE.PointLight(0x34d399, 3.4, 8.5, 1.6);
+    this.bunkerCrtGlowLight.position.set(a.bunkerConsole.x, a.bunkerConsole.y + 1.55, a.bunkerConsole.z + 0.45);
+    this.worldGroup.add(this.bunkerCrtGlowLight);
+    this.floor0Chunks.push(this.bunkerCrtGlowLight);
+
+    // 2. East Garage Escape Car
+    this.garageCarRig = createGarageEscapeCarRig();
+    mountFloor0(this.garageCarRig.root, a.garageCar, Math.PI * 0.5);
+
+    // 3. Chained Tool Shed interior workbench & tool rack
+    this.toolShedRig = createToolShedRig();
+    mountFloor0(this.toolShedRig.root, a.toolShed, Math.PI);
+
+    // 4. Outer Garden iron fencing, stone path & hedge props
+    this.outerGardenRig = createOuterGardenProps();
+    mountFloor0(this.outerGardenRig.root, a.outerGarden, 0);
+
+    // 5. Secret Attic storage crates + Chapter 2 Cargo Elevator shaft
+    this.secretAtticRig = createSecretAtticProps();
+    mountFloor0(this.secretAtticRig.root, a.secretAttic, Math.PI);
+
+    // 6. Mansion Architectural Showpieces: Chandelier, Lit Fireplace (+ Warm Ember PointLight), Grandfather Clock
+    this.chandelierRig = createChandelierRig();
+    mountFloor0(this.chandelierRig.root, a.chandelier, 0);
+
+    this.fireplaceRig = createFireplaceRig();
+    mountFloor0(this.fireplaceRig.root, a.fireplace, 0);
+    this.fireplaceGlowLight = new THREE.PointLight(0xff8c32, 4.6, 11.0, 1.5);
+    this.fireplaceGlowLight.position.set(a.fireplace.x, a.fireplace.y + 0.95, a.fireplace.z + 0.55);
+    this.worldGroup.add(this.fireplaceGlowLight);
+    this.floor0Chunks.push(this.fireplaceGlowLight);
+
+    this.grandfatherClockRig = createGrandfatherClockRig();
+    mountFloor0(this.grandfatherClockRig.root, a.grandfatherClock, 0);
+
+    // 7. Interactive Puzzles & 4-Stage Final Gate
+    this.falseBookshelfRig = createFalseBookshelfRig();
+    mountFloor0(this.falseBookshelfRig.root, a.falseBookshelf, 0);
+
+    this.interactivePianoRig = createInteractivePianoRig();
+    mountFloor0(this.interactivePianoRig.root, a.piano, Math.PI * 0.5);
+
+    this.steamValvesRig = createSteamValvesRig();
+    mountBasement(this.steamValvesRig.root, a.steamValves, Math.PI * 0.5);
+
+    this.fourStageFinalGateRig = createFourStageFinalGateRig();
+    mountFloor0(this.fourStageFinalGateRig.root, a.finalGate, 0);
   }
 
   /**
@@ -4797,14 +5249,22 @@ export class HorrorEngine {
 
       if (!door.isUnlocked) {
         if (this.inventory.includes('master_key')) {
-          door.isUnlocked = true;
-          door.isOpen = true;
-          const dv = this.doorVisuals.find((v) => v.def.id === door.id);
-          if (dv?.padlockMesh) dv.padlockMesh.visible = false;
-          this.triggerViewmodelAction('key_turn');
-          this.audio.playKeyLockTurn();
-          this.audio.playDoorCreak(true);
-          this.triggerVictoryEscape();
+          if (this.finalGateSirenSec <= 0) {
+            // Stage 4: 15-second Hydraulic Opening Siren Frenzy — alerts P. Drizzy straight to the Final Gate!
+            this.finalGateSirenSec = 15.0;
+            this.triggerViewmodelAction('key_turn');
+            this.audio.playKeyLockTurn();
+            this.audio.playBlackoutPowerDown();
+            this.emitNoise(this.px, this.py, this.pz, this.pFloor, 46, 4, 'flare');
+            this.showBanner(
+              'SIRENE DO PORTÃO ATIVADA (15s)! Pistões hidráulicos abrindo — SOBREVIVA ATÉ O PORTÃO ABRIR!'
+            );
+            this.emitHud();
+            return;
+          }
+          this.showBanner(
+            `PORTÃO HIDRÁULICO ABRINDO (${Math.ceil(this.finalGateSirenSec)}s)... Cuidado com o P. Drizzy!`
+          );
           return;
         }
         this.audio.playLockedRattle();
@@ -4933,20 +5393,23 @@ export class HorrorEngine {
     if (this.moonLight.castShadow) {
       this.moonLight.shadow.needsUpdate = true;
     }
-    const isQuiet = this.crouching;
+    const isOiled = this.oiledDoors.has(door.id);
+    const isQuiet = this.crouching || isOiled;
     const isSlam = this.sprinting && !isQuiet;
     this.doorSwingSpeed.set(door.id, isQuiet ? 3.2 : isSlam ? 12.2 : 6.5);
     this.triggerViewmodelAction('grab_reach');
-    this.audio.playDoorCreak(door.lockType === 'basement_key', isQuiet);
-    this.emitNoise(
-      this.px,
-      this.py,
-      this.pz,
-      this.pFloor,
-      isQuiet ? 3.2 : isSlam ? 18.0 : 12.0,
-      isQuiet ? 1 : isSlam ? 3 : 2,
-      'door'
-    );
+    if (!isOiled) {
+      this.audio.playDoorCreak(door.lockType === 'basement_key', isQuiet);
+      this.emitNoise(
+        this.px,
+        this.py,
+        this.pz,
+        this.pFloor,
+        isQuiet ? 3.2 : isSlam ? 18.0 : 12.0,
+        isQuiet ? 1 : isSlam ? 3 : 2,
+        'door'
+      );
+    }
     this.emitHud();
   }
 
@@ -5286,6 +5749,66 @@ export class HorrorEngine {
           sublabel: 'Painel Eletrônico (4 dígitos)',
           actionType: 'safe',
           accent: 'emerald',
+        };
+      }
+    }
+
+    // 10b. Update 2.0 Interactive Setpieces (Garage Escape Car, False Bookshelf, Interactive Piano, Steam Valves)
+    const anchors = this.layout.remasterAnchors;
+    if (anchors.garageCar.floor === this.pFloor) {
+      const d = scoreInteract(anchors.garageCar.x, anchors.garageCar.z, 3.1, 0.15);
+      if (d < bestDist) {
+        bestDist = d;
+        const readyToDrive =
+          this.garageBatteryInstalled && this.garageFuelInstalled && this.inventory.includes('garage_key');
+        best = {
+          id: 'remaster_garage_car',
+          label: readyToDrive ? 'Ligar Carro e Fugir (Garagem)' : 'Carro de Fuga (Garagem Leste)',
+          sublabel: readyToDrive
+            ? 'Motor pronto! Aperte para escapar!'
+            : `Bateria: ${this.garageBatteryInstalled ? 'OK' : 'Falta'} · Gasolina: ${this.garageFuelInstalled ? 'OK' : 'Falta'}`,
+          actionType: 'garage_car',
+          accent: readyToDrive ? 'emerald' : 'amber',
+        };
+      }
+    }
+    if (anchors.falseBookshelf.floor === this.pFloor && !this.bookshelfOpened) {
+      const d = scoreInteract(anchors.falseBookshelf.x, anchors.falseBookshelf.z, 2.75);
+      if (d < bestDist) {
+        bestDist = d;
+        best = {
+          id: 'remaster_false_bookshelf',
+          label: 'Estante Falsa (Emblemas Sol & Lua)',
+          sublabel: `Sol: ${this.bookshelfSunInstalled ? 'OK' : 'Falta'} · Lua: ${this.bookshelfMoonInstalled ? 'OK' : 'Falta'}`,
+          actionType: 'false_bookshelf',
+          accent: 'purple',
+        };
+      }
+    }
+    if (anchors.piano.floor === this.pFloor && this.pianoSequenceStep < 3) {
+      const d = scoreInteract(anchors.piano.x, anchors.piano.z, 2.7);
+      if (d < bestDist) {
+        bestDist = d;
+        best = {
+          id: 'remaster_piano',
+          label: `Tocar Piano Vertical (${this.pianoSequenceStep}/3)`,
+          sublabel: 'Toca acorde secreto (faz barulho!)',
+          actionType: 'piano',
+          accent: 'amber',
+        };
+      }
+    }
+    if (anchors.steamValves.floor === this.pFloor && this.steamValvesClosed.some((v) => !v)) {
+      const d = scoreInteract(anchors.steamValves.x, anchors.steamValves.z, 2.9);
+      if (d < bestDist) {
+        bestDist = d;
+        const closed = this.steamValvesClosed.filter(Boolean).length;
+        best = {
+          id: 'remaster_steam_valves',
+          label: `Fechar Válvula de Vapor (${closed}/3)`,
+          sublabel: 'Reduz a pressão das caldeiras do Subsolo',
+          actionType: 'steam_valve',
+          accent: 'red',
         };
       }
     }
@@ -6496,17 +7019,30 @@ export class HorrorEngine {
       spillIntensity = baseSpill * mult;
     }
 
-    this.flashlight.distance = this.uvMode ? FLASHLIGHT_CONFIG.uvDistance : FLASHLIGHT_CONFIG.distance;
-    this.flashlight.angle = this.uvMode ? FLASHLIGHT_CONFIG.uvAngle : FLASHLIGHT_CONFIG.angle;
+    const isNightmare = this.difficulty === 'nightmare';
+    this.flashlight.distance = this.uvMode
+      ? FLASHLIGHT_CONFIG.uvDistance
+      : isNightmare
+      ? 28.0
+      : 22.0;
+    this.flashlight.angle = this.uvMode
+      ? FLASHLIGHT_CONFIG.uvAngle
+      : isNightmare
+      ? FLASHLIGHT_CONFIG.angle * 1.15
+      : FLASHLIGHT_CONFIG.angle;
     this.flashlight.penumbra = this.uvMode ? FLASHLIGHT_CONFIG.uvPenumbra : FLASHLIGHT_CONFIG.penumbra;
     this.flashlight.decay = FLASHLIGHT_CONFIG.decay;
-    this.flashlight.intensity = this.stunFlashTimer > 0 ? 24.0 : flashIntensity;
+    this.flashlight.intensity = this.stunFlashTimer > 0 ? 24.0 : isNightmare ? flashIntensity * 1.2 : flashIntensity;
     this.flashlight.color.setHex(activeColorHex);
 
-    this.flashlightSpill.distance = this.uvMode ? FLASHLIGHT_CONFIG.uvSpillDistance : FLASHLIGHT_CONFIG.spillDistance;
+    this.flashlightSpill.distance = this.uvMode
+      ? FLASHLIGHT_CONFIG.uvSpillDistance
+      : isNightmare
+      ? 10.5
+      : FLASHLIGHT_CONFIG.spillDistance;
     this.flashlightSpill.angle = FLASHLIGHT_CONFIG.spillAngle;
     this.flashlightSpill.penumbra = FLASHLIGHT_CONFIG.spillPenumbra;
-    this.flashlightSpill.intensity = this.stunFlashTimer > 0 ? 5.5 : spillIntensity;
+    this.flashlightSpill.intensity = this.stunFlashTimer > 0 ? 5.5 : isNightmare ? spillIntensity * 1.25 : spillIntensity;
     this.flashlightSpill.color.setHex(activeColorHex);
 
     // Reveal fluorescent UV marks dynamically under UV beam & auto-save after ~0.8s continuous illumination!
@@ -6673,10 +7209,27 @@ export class HorrorEngine {
     //   interpolates the single authoritative P. Drizzy replicated from the Host GameServer!
     let aiEvents: ReturnType<DiddyAiController['tick']>;
     if (this.isRemoteClient) {
-      const kD = Math.min(1, dt * 14);
       const prevDx = this.ai.x;
       const prevDz = this.ai.z;
-      if (this.remoteDiddyTarget.initialized) {
+      const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      const sampled = this.remoteDiddyInterp.sample(nowMs);
+      if (sampled) {
+        this.ai.x = sampled.x;
+        this.ai.y = sampled.y;
+        this.ai.z = sampled.z;
+        this.ai.yaw = sampled.yaw;
+        this.ai.floor = sampled.floor;
+        this.ai.state = sampled.state;
+        this.ai.animState =
+          sampled.state === 'stunned'
+            ? 'stunned'
+            : sampled.actualSpeed > 2.6
+            ? 'chase'
+            : sampled.actualSpeed > 0.12
+            ? 'patrol'
+            : 'idle';
+      } else if (this.remoteDiddyTarget.initialized) {
+        const kD = Math.min(1, dt * 14);
         this.ai.x += (this.remoteDiddyTarget.x - this.ai.x) * kD;
         this.ai.y += (this.remoteDiddyTarget.y - this.ai.y) * kD;
         this.ai.z += (this.remoteDiddyTarget.z - this.ai.z) * kD;
@@ -6987,9 +7540,32 @@ export class HorrorEngine {
       }
     }
 
-    // Tick SecurityBunker lure cooldown, creaking boards, DOWNED bleedout, Spectator cam & Neural Interference
+    // Tick SecurityBunker lure cooldown, Polaroid cooldown, 15s Final Gate Siren, creaking boards, DOWNED bleedout, Spectator cam & Neural Interference
     if (this.bunkerLureCooldownSec > 0) {
       this.bunkerLureCooldownSec = Math.max(0, this.bunkerLureCooldownSec - dt);
+    }
+    if (this.polaroidCooldownSec > 0) {
+      this.polaroidCooldownSec = Math.max(0, this.polaroidCooldownSec - dt);
+    }
+    if (this.finalGateSirenSec > 0) {
+      const prevSiren = this.finalGateSirenSec;
+      this.finalGateSirenSec = Math.max(0, this.finalGateSirenSec - dt);
+      if (Math.floor(prevSiren / 3) !== Math.floor(this.finalGateSirenSec / 3) && this.finalGateSirenSec > 0) {
+        const fg = this.layout.remasterAnchors.finalGate;
+        this.emitNoise(fg.x, fg.y, fg.z, 0, 44, 4, 'flare');
+      }
+      if (this.finalGateSirenSec <= 0) {
+        const exitDoor = this.layout.doors.find((d) => d.isExit);
+        if (exitDoor) {
+          exitDoor.isUnlocked = true;
+          exitDoor.isOpen = true;
+          const dv = this.doorVisuals.find((v) => v.def.id === exitDoor.id);
+          if (dv?.padlockMesh) dv.padlockMesh.visible = false;
+          this.audio.playDoorCreak(true);
+          this.showBanner('PORTÃO PRINCIPAL ABERTO! Corra para a saída agora!');
+          this.emitHud();
+        }
+      }
     }
     if (this.creakCooldownSec > 0) {
       this.creakCooldownSec = Math.max(0, this.creakCooldownSec - dt);
@@ -7570,12 +8146,14 @@ export class HorrorEngine {
     }
 
     // Realistic Midnight-Blue Night Sky vs Cold Greenish-Teal Underground vs Blackout Crimson!
-    const targetSky = this.pFloor === -1 ? 0x22565c : this.blackoutActive ? 0x291820 : 0x3e5c99;
+    // Nightmare OLED Floor: NEVER crush HemisphereLight below 0.38 so players always read corridors clearly!
+    const targetSky = this.pFloor === -1 ? 0x26626a : this.blackoutActive ? 0x351e2c : 0x4b6fb3;
     const targetBg = this.pFloor === -1 ? 0x07171c : this.blackoutActive ? 0x12090d : 0x0a1326;
     const lerpK = Math.min(1, dt * 3);
     this.scratchColor.setHex(targetSky);
     this.hemiLight.color.lerp(this.scratchColor, lerpK);
-    this.hemiLight.intensity = this.blackoutActive ? 0.24 : 0.56;
+    this.hemiLight.intensity = this.blackoutActive ? 0.38 : 0.62;
+    this.windowRimLight.intensity = this.pFloor === 0 ? (this.blackoutActive ? 0.32 : 0.46) : 0.28;
     this.moonLight.visible = this.pFloor === 0 && !this.blackoutActive;
     this.scratchColor.setHex(targetBg);
     if (this.scene.background instanceof THREE.Color) {
@@ -7705,6 +8283,62 @@ export class HorrorEngine {
       tarp.curtainPivot.rotation.x =
         Math.sin(this.totalTimeSec * 1.35 + tarp.phaseOffset) * 0.07 +
         Math.sin(this.totalTimeSec * 2.7 + tarp.phaseOffset * 1.9) * 0.025;
+    }
+
+    // 5b. Update 2.0 Mounted High-Density Micro-Voxel Rigs (zero per-frame allocations!)
+    if (this.chandelierRig) {
+      this.chandelierRig.chandelierPivot.rotation.z = Math.sin(this.totalTimeSec * 0.85) * 0.032;
+      this.chandelierRig.chandelierPivot.rotation.x = Math.cos(this.totalTimeSec * 0.62) * 0.02;
+    }
+    if (this.fireplaceRig) {
+      const flicker = 4.2 + Math.sin(this.totalTimeSec * 11.3) * 0.65 + Math.cos(this.totalTimeSec * 19.7) * 0.35;
+      this.fireplaceRig.emberLight.intensity = flicker * 0.55;
+      if (this.fireplaceGlowLight) {
+        this.fireplaceGlowLight.intensity = flicker;
+      }
+      for (let i = 0; i < this.fireplaceRig.emberMeshes.length; i++) {
+        const em = this.fireplaceRig.emberMeshes[i];
+        em.scale.y = 0.85 + Math.sin(this.totalTimeSec * 14 + i * 1.9) * 0.25;
+      }
+    }
+    if (this.grandfatherClockRig) {
+      this.grandfatherClockRig.pendulumPivot.rotation.z = Math.sin(this.totalTimeSec * Math.PI) * 0.22;
+    }
+    this.bunkerSetpieceRig?.update(
+      this.totalTimeSec,
+      Math.max(0, Math.min(1, this.securityPowerPct / 100)),
+      this.bunkerLureCooldownSec > 0
+    );
+    if (this.garageCarRig) {
+      this.garageCarRig.batterySlot.visible = this.garageBatteryInstalled;
+      const targetHood = this.garageBatteryInstalled ? 0 : -0.68;
+      this.garageCarRig.hoodPivot.rotation.x +=
+        (targetHood - this.garageCarRig.hoodPivot.rotation.x) * Math.min(1, dt * 5);
+      const carReady = this.garageBatteryInstalled && this.garageFuelInstalled;
+      for (let i = 0; i < this.garageCarRig.headlights.length; i++) {
+        const mat = this.garageCarRig.headlights[i].material as THREE.MeshStandardMaterial;
+        mat.emissiveIntensity = carReady ? 1.85 : 0.15;
+      }
+    }
+    if (this.steamValvesRig) {
+      const closedCount = this.steamValvesClosed.filter(Boolean).length;
+      this.steamValvesRig.update(this.totalTimeSec, 1 - closedCount / 3);
+    }
+    if (this.falseBookshelfRig) {
+      const targetRot = this.bookshelfOpened ? -1.45 : 0;
+      this.falseBookshelfRig.shelfPivot.rotation.y +=
+        (targetRot - this.falseBookshelfRig.shelfPivot.rotation.y) * Math.min(1, dt * 4.5);
+      this.falseBookshelfRig.emblemSunSlot.visible = this.bookshelfSunInstalled;
+      this.falseBookshelfRig.emblemMoonSlot.visible = this.bookshelfMoonInstalled;
+    }
+    if (this.fourStageFinalGateRig) {
+      const exitDoor = this.layout.doors.find((d) => d.isExit);
+      const sirenActive = this.finalGateSirenSec > 0;
+      const gateOpenProg = exitDoor?.openProgress ?? (sirenActive ? 1 - this.finalGateSirenSec / 15 : 0);
+      this.fourStageFinalGateRig.update(this.totalTimeSec, sirenActive, gateOpenProg);
+      for (const cg of this.fourStageFinalGateRig.chainGroups) {
+        cg.visible = !(exitDoor?.planksRemoved ?? false);
+      }
     }
 
     // 6. Courtyard Light Drizzle Rain + Ambient Puddle Ripples
@@ -8491,6 +9125,9 @@ export class HorrorEngine {
 
   dispose(): void {
     this.disposed = true;
+    this.unsubI18n?.();
+    this.unsubI18n = null;
+    tapeAudioPlayer.stop(false);
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     if (this.timeoutId !== null) clearTimeout(this.timeoutId);
     window.removeEventListener('resize', this.handleResize);

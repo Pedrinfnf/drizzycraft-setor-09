@@ -696,6 +696,18 @@ export class GameServer {
         noiseEvents: this.noiseScratch,
       });
 
+      const prevDx = this.state.diddy.x;
+      const prevDz = this.state.diddy.z;
+      const stepDx = this.ai.x - prevDx;
+      const stepDz = this.ai.z - prevDz;
+      const stepMag = Math.hypot(stepDx, stepDz);
+      const maxDiddyTickDisp = 0.16; // Hard anti-teleport clamp per 10ms tick
+      if (stepMag > maxDiddyTickDisp && this.ai.floor === this.state.diddy.floor) {
+        const s = maxDiddyTickDisp / stepMag;
+        this.ai.x = prevDx + stepDx * s;
+        this.ai.z = prevDz + stepDz * s;
+      }
+
       this.state.diddy.x = this.ai.x;
       this.state.diddy.y = this.ai.y;
       this.state.diddy.z = this.ai.z;
@@ -1623,11 +1635,12 @@ export class GameServer {
         eObj.hatchOpened = this.state.hatchOpened;
         this.worldFlagsDirty = false;
       }
-      if (this.dirtyDoors.size > 0) {
-        eObj.doors = {};
-        for (const id of this.dirtyDoors) eObj.doors[id] = { ...this.state.doors[id] };
-        this.dirtyDoors.clear();
+      // Always include complete authoritative doorsState dictionary in 30Hz deltas for automatic packet-loss reconciliation!
+      eObj.doors = {};
+      for (const id of Object.keys(this.state.doors)) {
+        eObj.doors[id] = { ...this.state.doors[id] };
       }
+      this.dirtyDoors.clear();
       if (this.dirtyItems.size > 0) {
         eObj.items = {};
         for (const id of this.dirtyItems) eObj.items[id] = { ...this.state.items[id] };

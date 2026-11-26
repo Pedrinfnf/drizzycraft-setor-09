@@ -34,6 +34,8 @@ import { normalizeGamepadState, type NormalizedGamepadState } from './game/input
 import { saveSystem, type ProgressionStateV4 } from './game/saveSystem';
 import { cloudSync, type CloudSyncState } from './game/cloudSync';
 import { voiceDubbing } from './game/voiceDubbing';
+import { tapeAudioPlayer } from './audio/TapeAudioPlayer';
+import { i18nStore } from './i18n/i18n';
 import { multiplayerClient } from './network/MultiplayerClient';
 import { proximityVoice, type VoiceSignalPayload } from './network/ProximityVoice';
 import type { CharacterPortraitId } from './game/portraitRenderer';
@@ -190,6 +192,7 @@ export default function App() {
     director: '',
   });
   const [settings, setSettings] = useState<GameSettings>(() => saveSystem.getSettings());
+  const [, setLangRevision] = useState(0);
   const [profile, setProfile] = useState<ProfileProgress>(() => saveSystem.getProfile());
   const [progression, setProgression] = useState<ProgressionStateV4>(() => saveSystem.getProgression());
   const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>('hard');
@@ -367,15 +370,29 @@ export default function App() {
     }
   }, [authSession]);
 
-  // Sync Voice Dubbing engine with live Language & Audio settings
+  // Sync Global Reactive i18n Store, Neural Tape Audio Player & Voice Dubbing with live Language & Audio settings
   useEffect(() => {
+    const lang = settings.locale?.language ?? 'pt-BR';
+    i18nStore.setLang(lang);
+    const vol = (settings.audio.master ?? 0.85) * (settings.audio.voiceTapes ?? 0.95);
+    tapeAudioPlayer.configure({
+      language: lang,
+      volume: vol,
+      muted: settings.audio.muted || settings.locale?.dubbing === false,
+    });
     voiceDubbing.configure({
-      language: settings.locale?.language ?? 'pt-BR',
+      language: lang,
       enabled: settings.locale?.dubbing !== false,
-      volume: (settings.audio.master ?? 0.85) * (settings.audio.voiceTapes ?? 0.95),
+      volume: vol,
       muted: settings.audio.muted,
     });
   }, [settings.locale, settings.audio.master, settings.audio.voiceTapes, settings.audio.muted]);
+
+  useEffect(() => {
+    return i18nStore.subscribe(() => {
+      setLangRevision((v) => v + 1);
+    });
+  }, []);
 
   // 30-35Hz Multiplayer Crossplay Sync Loop + Authoritative P. Drizzy/Door/Item Sync + Proximity Voice Chat
   useEffect(() => {

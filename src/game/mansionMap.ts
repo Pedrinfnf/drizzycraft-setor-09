@@ -25,6 +25,7 @@ import type {
   WorldPickupType,
 } from './types';
 import { getDifficultyConfig } from './difficulty';
+import { i18nStore } from '../i18n/i18n';
 
 export const WALL_SWITCH_WALL_OFFSET = 0.02;
 export const WALL_SWITCH_HEIGHT = 1.25;
@@ -142,6 +143,22 @@ export interface MansionLayout {
   cobwebs: { id: string; floor: FloorId; x: number; y: number; z: number; rotY: number; scale: number }[];
   grassTufts: { id: string; x: number; z: number; scale: number; rotY: number; isDryLeaves?: boolean }[];
   steamVents: { id: string; x: number; y: number; z: number }[];
+  /** Physical world anchors (x, y, z) for every Chapter 1 Remaster 3D setpiece & puzzle */
+  remasterAnchors: {
+    bunkerConsole: { x: number; y: number; z: number; floor: FloorId };
+    garageCar: { x: number; y: number; z: number; floor: FloorId };
+    toolShed: { x: number; y: number; z: number; floor: FloorId };
+    outerGarden: { x: number; y: number; z: number; floor: FloorId };
+    ownerArchives: { x: number; y: number; z: number; floor: FloorId };
+    secretAttic: { x: number; y: number; z: number; floor: FloorId };
+    falseBookshelf: { x: number; y: number; z: number; floor: FloorId };
+    piano: { x: number; y: number; z: number; floor: FloorId };
+    steamValves: { x: number; y: number; z: number; floor: FloorId };
+    finalGate: { x: number; y: number; z: number; floor: FloorId };
+    chandelier: { x: number; y: number; z: number; floor: FloorId };
+    fireplace: { x: number; y: number; z: number; floor: FloorId };
+    grandfatherClock: { x: number; y: number; z: number; floor: FloorId };
+  };
 }
 
 export function gridToWorld(g: number): number {
@@ -278,12 +295,12 @@ export const ROOMS: RoomDefinition[] = [
   { id: 'depot', name: 'Subsolo · Depósito Químico', floor: -1, x0: 16, z0: 16, x1: 19, z1: 25, surface: 'concrete', zoneId: 'basement_depot' },
   { id: 'cells', name: 'Subsolo · Celas de Contenção', floor: -1, x0: 21, z0: 16, x1: 26, z1: 26, surface: 'tile', zoneId: 'basement' },
 
-  // Chapter 1 Remaster Expansion (25+ Interconnected Rooms): Outer Garden, Tool Shed, Garage, Secret Attic, Owner Archives & Steam Vault
-  { id: 'outer_garden', name: 'Pátio Externo & Jardim Cercado', floor: 0, x0: 21, z0: 30, x1: 26, z1: 33, surface: 'stone', zoneId: 'start' },
-  { id: 'tool_shed', name: 'Galpão de Ferramentas (Acorrentado)', floor: 0, x0: 27, z0: 32, x1: 31, z1: 34, surface: 'wood', zoneId: 'start' },
-  { id: 'garage', name: 'Garagem & Oficina · Carro de Fuga', floor: 0, x0: 32, z0: 15, x1: 34, z1: 28, surface: 'concrete', zoneId: 'start' },
-  { id: 'owner_archives', name: 'Sala de Arquivos do Dono (Estante Falsa)', floor: 0, x0: 8, z0: 3, x1: 13, z1: 8, surface: 'wood', zoneId: 'red_wing' },
-  { id: 'secret_attic', name: 'Sótão Secreto · Elevador de Carga Cap. 2', floor: 0, x0: 22, z0: 3, x1: 27, z1: 8, surface: 'wood', zoneId: 'blue_wing' },
+  // Chapter 1 Remaster Expansion (25 Interconnected Walkable Rooms): Outer Garden, Tool Shed, Garage, Owner Archives, Secret Attic & Steam Vault
+  { id: 'outer_garden', name: 'Pátio Externo & Jardim Cercado', floor: 0, x0: 22, z0: 30, x1: 26, z1: 34, surface: 'stone', zoneId: 'start' },
+  { id: 'tool_shed', name: 'Galpão de Ferramentas (Acorrentado)', floor: 0, x0: 28, z0: 33, x1: 31, z1: 34, surface: 'wood', zoneId: 'start' },
+  { id: 'garage', name: 'Garagem & Oficina · Carro de Fuga', floor: 0, x0: 33, z0: 15, x1: 34, z1: 28, surface: 'concrete', zoneId: 'start' },
+  { id: 'owner_archives', name: 'Sala de Arquivos do Dono (Estante Falsa)', floor: 0, x0: 8, z0: 3, x1: 13, z1: 8, surface: 'wood', zoneId: 'start' },
+  { id: 'secret_attic', name: 'Sótão Secreto · Elevador de Carga Cap. 2', floor: 0, x0: 22, z0: 3, x1: 27, z1: 8, surface: 'wood', zoneId: 'start' },
   { id: 'steam_vault', name: 'Subsolo · Galeria das Válvulas de Vapor', floor: -1, x0: 5, z0: 16, x1: 7, z1: 26, surface: 'basement_wet', zoneId: 'basement' },
 ];
 
@@ -711,6 +728,23 @@ function buildArchitectureGrids(): {
     fillRect(floor0, surface0, st.gxMin, st.gzTop + 1, st.gxMax, st.gzTop + 1, CELL_FLOOR, 'concrete');
   }
 
+  // 12. PHYSICALLY CARVED Chapter 1 Remaster Expansion Wings (100% walkable & connected!)
+  // 12a. Pátio Externo & Jardim Cercado (open-sky courtyard east of Reception)
+  fillRect(floor0, surface0, 22, 30, 26, 34, CELL_COURTYARD, 'stone');
+  fillRect(floor0, surface0, 21, 31, 21, 32, CELL_FLOOR, 'stone'); // 2-cell doorway Reception <-> Outer Garden
+  // 12b. Galpão de Ferramentas (chained shed south-east of Outer Garden)
+  fillRect(floor0, surface0, 28, 33, 31, 34, CELL_FLOOR, 'wood');
+  fillRect(floor0, surface0, 27, 33, 27, 34, CELL_FLOOR, 'wood'); // 2-cell chained doorway Outer Garden <-> Tool Shed
+  // 12c. Garagem & Oficina Mecânica (east bay housing functional Escape Car)
+  fillRect(floor0, surface0, 33, 15, 34, 28, CELL_FLOOR, 'concrete');
+  fillRect(floor0, surface0, 32, 20, 32, 22, CELL_FLOOR, 'concrete'); // 3-cell wide Garage archway from Oficina
+  // 12d. Sala de Arquivos do Dono (north-west secret room behind False Bookshelf)
+  fillRect(floor0, surface0, 8, 3, 13, 8, CELL_FLOOR, 'wood');
+  fillRect(floor0, surface0, 10, 9, 11, 9, CELL_FLOOR, 'wood'); // 2-cell doorway North Gallery <-> Owner Archives
+  // 12e. Sótão Secreto & Elevador de Carga Cap. 2 (north-east wing)
+  fillRect(floor0, surface0, 22, 3, 27, 8, CELL_FLOOR, 'wood');
+  fillRect(floor0, surface0, 24, 9, 25, 9, CELL_FLOOR, 'wood'); // 2-cell doorway North Gallery <-> Secret Attic
+
   buildPerimeterWalls(floor0);
 
   // ---- UNDERGROUND FLOOR (FLOOR -1) ----
@@ -808,6 +842,22 @@ function buildDoors(): DoorDefinition[] {
       lockType: 'red_key',
       zoneA: 'start',
       zoneB: 'red_wing',
+      isOpen: false,
+      isUnlocked: false,
+      openProgress: 0,
+    },
+    // Chained Tool Shed Door in Outer Garden (unlocked with Wire Cutters!)
+    {
+      id: 'door_tool_shed',
+      name: 'Galpão de Ferramentas (Acorrentado)',
+      floor: 0,
+      gx: 27,
+      gz: 33,
+      spanCells: 2,
+      axis: 'z',
+      lockType: 'wire_cutters',
+      zoneA: 'start',
+      zoneB: 'start',
       isOpen: false,
       isUnlocked: false,
       openProgress: 0,
@@ -1248,47 +1298,11 @@ function buildFurniture(): FurniturePropDefinition[] {
 }
 
 export function getItemLabel(t: WorldPickupType): string {
-  switch (t) {
-    case 'flashlight': return 'Lanterna Voxel';
-    case 'stun_gun': return 'Arma de Stun';
-    case 'stun_ammo': return 'Carga de Stun';
-    case 'throwable_can': return 'Lata Arremessável';
-    case 'red_key': return 'Chave Vermelha';
-    case 'blue_key': return 'Chave Azul';
-    case 'basement_key': return 'Chave do Subsolo';
-    case 'crowbar': return 'Pé de Cabra';
-    case 'crowbar_rod': return 'Haste de Aço (Craft)';
-    case 'crowbar_hook': return 'Gancho Metálico (Craft)';
-    case 'stun_coil': return 'Bobina Elétrica (Craft)';
-    case 'stun_cell': return 'Célula de Carga (Craft)';
-    case 'fuse': return 'Fusível Industrial';
-    case 'wire_cutters': return 'Alicate de Corte';
-    case 'master_key': return 'Chave Mestra';
-    case 'flare': return 'Sinalizador';
-    case 'battery': return 'Pilha de Lanterna';
-  }
+  return i18nStore.getItemName(t);
 }
 
 export function getItemDescription(t: WorldPickupType): string {
-  switch (t) {
-    case 'flashlight': return 'Ilumina corredores escuros do Setor 09. Pressione [V] para alternar o Modo Luz UV roxa.';
-    case 'stun_gun': return 'Dispara arco elétrico de alta voltagem que atordoa o P. Drizzy (12s Easy · 9s Hard · 6s Nightmare).';
-    case 'stun_ammo': return 'Recarrega +1 disparo elétrico na sua Arma de Stun.';
-    case 'throwable_can': return 'Lata metálica arremessável. Cria eco metálico onde cair para distrair o P. Drizzy.';
-    case 'red_key': return 'Destranca a Porta Vermelha do Arquivo Morto (Térreo).';
-    case 'blue_key': return 'Destranca a Porta Azul da Enfermaria (Térreo).';
-    case 'basement_key': return 'Abre as Grades Oeste e Leste das escadas para o Subsolo.';
-    case 'crowbar': return 'Arranca as tábuas do Depósito Químico (Subsolo) e do Portão Norte de Saída.';
-    case 'crowbar_rod': return 'Peça de Craft: combine com o Gancho Metálico em uma Bancada para montar o Pé de Cabra.';
-    case 'crowbar_hook': return 'Peça de Craft: combine com a Haste de Aço em uma Bancada para montar o Pé de Cabra.';
-    case 'stun_coil': return 'Peça de Craft: combine com a Célula de Carga na Bancada para fabricar +1 Carga de Stun.';
-    case 'stun_cell': return 'Peça de Craft: combine com a Bobina Elétrica na Bancada para fabricar +1 Carga de Stun.';
-    case 'fuse': return 'Instale na Sala dos Geradores (Subsolo) para religar a energia durante o Blecaute.';
-    case 'wire_cutters': return 'Corta as correntes de aço da Câmara Ômega no Subsolo (visível pela CAM 06).';
-    case 'master_key': return 'Chave final do Cofre do Gerador. Destranca o Portão Norte de Saída!';
-    case 'flare': return 'Sinalizador luminoso de emergência: atordoa e afasta o P. Drizzy por instantes.';
-    case 'battery': return 'Recarrega +42% da bateria da sua Lanterna Voxel instantaneamente.';
-  }
+  return i18nStore.getItemDesc(t);
 }
 
 export function generateMansionLayout(seed: number, difficulty: Difficulty): MansionLayout {
@@ -1437,8 +1451,48 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
   spawnItemInZone('item_stun_ammo_1', 'stun_ammo', 'red_wing', true);
   spawnItemInZone('item_stun_ammo_2', 'stun_ammo', 'basement', false);
 
-  // 5. Wire Cutters (Real/Secret ARG layer -> opens Secret Chamber in Underground!)
+  // 5. Wire Cutters (Real/Secret ARG layer -> opens Secret Chamber & Tool Shed!)
   spawnItemInZone('item_wire_cutters', 'wire_cutters', 'blue_wing', true);
+
+  // 5b. ALL Chapter 1 Remaster New Tools & Puzzle Items — PHYSICALLY SPAWNED flush on tables (ZERO floating!)
+  const spawnRemasterTool = (
+    id: string,
+    itemType: WorldPickupType,
+    floor: FloorId,
+    gx: number,
+    gz: number,
+    zoneId: string
+  ) => {
+    const wx = gridToWorld(gx);
+    const wz = gridToWorld(gz);
+    const wy = ensureTableUnder(floor, wx, wz, `tbl_${id}`) + 0.04;
+    items.push({
+      id,
+      itemType,
+      label: getItemLabel(itemType),
+      floor,
+      x: wx,
+      y: wy,
+      z: wz,
+      zoneId,
+      collected: false,
+    });
+  };
+  // All 7 new tools (crowbar & wire_cutters already spawned above; remaining 5 + extra puzzle tools spawned right here!)
+  spawnRemasterTool('item_polaroid_camera', 'polaroid_camera', 0, 19.3, 30.8, 'start'); // Reception desk
+  spawnRemasterTool('item_oil_can', 'oil_can', 0, 28.4, 24.5, 'start'); // Oficina east wing
+  spawnRemasterTool('item_gas_can', 'gas_can', 0, 23.5, 33.2, 'start'); // Outer Garden
+  spawnRemasterTool('item_car_battery', 'car_battery', 0, 33.8, 16.5, 'start'); // Garage north bay
+  spawnRemasterTool('item_alarm_clock', 'alarm_clock', 0, 4.6, 23.0, 'start'); // Refeitório west wing
+  // Remaster puzzle & survival items
+  spawnRemasterTool('item_garage_key', 'garage_key', 0, 9.2, 4.2, 'start'); // Owner Archives
+  spawnRemasterTool('item_emblem_sun', 'emblem_sun', 0, 25.4, 30.8, 'start'); // Outer Garden pedestal
+  spawnRemasterTool('item_emblem_moon', 'emblem_moon', 0, 26.2, 4.2, 'start'); // Secret Attic
+  spawnRemasterTool('item_medkit', 'medkit', 0, 22.8, 17.5, 'blue_wing'); // Enfermaria
+  spawnRemasterTool('item_freq_pills', 'freq_pills', 0, 10.2, 32.5, 'start'); // Cabine 09-A
+  spawnRemasterTool('item_lockpick', 'lockpick', 0, 23.2, 6.4, 'start'); // Secret Attic
+  spawnRemasterTool('item_cell_key', 'cell_key', 0, 29.8, 33.6, 'start'); // Inside Chained Tool Shed!
+  spawnRemasterTool('item_fuse_2', 'fuse', -1, 10.2, 20.5, 'basement'); // 2nd Fuse for 4-Stage Final Gate!
 
   // 6. Throwable Distraction Cans (EVERY can sits solidly on a table/crate or on the floor — ZERO floating!)
   const throwableSpots: { floor: FloorId; x: number; y: number; z: number; zone: string; onTable?: boolean }[] = [
@@ -1698,6 +1752,12 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
     { x: gridToWorld(25.5), y: FLOOR_MINUS_1_Y + BASEMENT_CEILING_H - 0.2, z: gridToWorld(6.0), floor: -1 as FloorId, flickerSeed: 12.2, color: 0x4ade80 }, // Câmara Ômega phosphor green!
     { x: gridToWorld(8.5), y: FLOOR_MINUS_1_Y + BASEMENT_CEILING_H - 0.2, z: gridToWorld(5.5), floor: -1 as FloorId, flickerSeed: 12.6, color: 0x5eead4 },
     { x: gridToWorld(28.0), y: FLOOR_MINUS_1_Y + BASEMENT_CEILING_H - 0.2, z: gridToWorld(5.5), floor: -1 as FloorId, flickerSeed: 12.9, color: 0x5eead4 },
+    // Lighting for physically carved Chapter 1 Remaster expansion wings
+    { x: gridToWorld(33.5), y: GROUND_CEILING_H - 0.25, z: gridToWorld(21.5), floor: 0 as FloorId, flickerSeed: 13.4, color: 0xfef3c7 }, // Garage
+    { x: gridToWorld(29.5), y: GROUND_CEILING_H - 0.25, z: gridToWorld(33.5), floor: 0 as FloorId, flickerSeed: 13.8, color: 0xfde68a }, // Tool Shed
+    { x: gridToWorld(10.5), y: GROUND_CEILING_H - 0.25, z: gridToWorld(5.5), floor: 0 as FloorId, flickerSeed: 14.2, color: 0xfdba74 }, // Owner Archives
+    { x: gridToWorld(24.5), y: GROUND_CEILING_H - 0.25, z: gridToWorld(5.5), floor: 0 as FloorId, flickerSeed: 14.7, color: 0xbae6fd }, // Secret Attic
+    { x: gridToWorld(6.0), y: FLOOR_MINUS_1_Y + BASEMENT_CEILING_H - 0.2, z: gridToWorld(21.0), floor: -1 as FloorId, flickerSeed: 15.1, color: 0xfb923c }, // Steam Vault
   ];
 
   const courtyardPillars = [
@@ -1836,6 +1896,21 @@ export function generateMansionLayout(seed: number, difficulty: Difficulty): Man
     cobwebs,
     grassTufts,
     steamVents,
+    remasterAnchors: {
+      bunkerConsole: { x: gridToWorld(11.0), y: FLOOR_0_Y, z: gridToWorld(30.6), floor: 0 },
+      garageCar: { x: gridToWorld(33.5), y: FLOOR_0_Y, z: gridToWorld(23.5), floor: 0 },
+      toolShed: { x: gridToWorld(29.5), y: FLOOR_0_Y, z: gridToWorld(33.5), floor: 0 },
+      outerGarden: { x: gridToWorld(24.2), y: FLOOR_0_Y, z: gridToWorld(32.0), floor: 0 },
+      ownerArchives: { x: gridToWorld(10.5), y: FLOOR_0_Y, z: gridToWorld(5.5), floor: 0 },
+      secretAttic: { x: gridToWorld(24.5), y: FLOOR_0_Y, z: gridToWorld(5.5), floor: 0 },
+      falseBookshelf: { x: gridToWorld(10.5), y: FLOOR_0_Y, z: gridToWorld(8.6), floor: 0 },
+      piano: { x: gridToWorld(12.2), y: FLOOR_0_Y, z: gridToWorld(4.4), floor: 0 },
+      steamValves: { x: gridToWorld(6.0), y: FLOOR_MINUS_1_Y, z: gridToWorld(21.0), floor: -1 },
+      finalGate: { x: gridToWorld(17.5), y: FLOOR_0_Y, z: gridToWorld(2.3), floor: 0 },
+      chandelier: { x: gridToWorld(17.5), y: GROUND_CEILING_H - 0.1, z: gridToWorld(31.5), floor: 0 },
+      fireplace: { x: gridToWorld(11.0), y: FLOOR_0_Y, z: gridToWorld(3.4), floor: 0 },
+      grandfatherClock: { x: gridToWorld(16.2), y: FLOOR_0_Y, z: gridToWorld(19.2), floor: 0 },
+    },
   };
 }
 

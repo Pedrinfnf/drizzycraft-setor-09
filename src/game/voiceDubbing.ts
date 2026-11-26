@@ -1,3 +1,8 @@
+import {
+  tapeAudioPlayer,
+  type TapeNumber,
+  mapLanguageToTapeLang,
+} from '../audio/TapeAudioPlayer';
 import type { Language } from './types';
 
 export type DubSpeaker = 'marcos' | 'diddy' | 'vhs' | 'system' | 'survivor';
@@ -7,65 +12,51 @@ export interface VoiceDubbingConfig {
   enabled?: boolean;
   volume?: number;
   muted?: boolean;
+  onSubtitle?: (line: string | null) => void;
 }
 
-interface VocalProfile {
-  pitch: number;
-  rate: number;
+function detectTapeNumber(text: string, speaker: DubSpeaker): TapeNumber | null {
+  const lower = text.toLowerCase();
+  if (
+    /tape[\s_-]*0?2|fita[\s#_-]*0?2|cinta[\s#_-]*0?2|ch1_tape_02|dra\.?\s*helena|dr\.?\s*helena|interfer[eê]ncia neural|neural interference/.test(
+      lower
+    )
+  ) {
+    return 2;
+  }
+  if (
+    /tape[\s_-]*0?1|fita[\s#_-]*0?1|cinta[\s#_-]*0?1|ch1_tape_01|cabine\s*09-a|cabin\s*09-a|cabina\s*09-a/.test(
+      lower
+    )
+  ) {
+    return 1;
+  }
+  if (speaker === 'vhs') {
+    return 1;
+  }
+  return null;
 }
 
-const SPEAKER_PROFILES: Record<DubSpeaker, VocalProfile> = {
-  diddy: { pitch: 0.55, rate: 0.82 },
-  marcos: { pitch: 0.92, rate: 1.06 },
-  vhs: { pitch: 1.08, rate: 0.96 },
-  system: { pitch: 0.85, rate: 1.05 },
-  survivor: { pitch: 1.0, rate: 1.02 },
-};
+function getAudioContextCtor(): (typeof AudioContext) | null {
+  if (typeof globalThis === 'undefined') return null;
+  const g = globalThis as unknown as {
+    AudioContext?: typeof AudioContext;
+    webkitAudioContext?: typeof AudioContext;
+  };
+  return g.AudioContext ?? g.webkitAudioContext ?? null;
+}
 
 export class VoiceDubbingEngine {
   private language: Language = 'pt-BR';
   private enabled = true;
   private volume = 0.95;
   private muted = false;
-  private cachedVoices: SpeechSynthesisVoice[] = [];
-  private voicesBound = false;
-
-  constructor() {
-    this.bindVoicesChanged();
-  }
+  private onSubtitle: ((line: string | null) => void) | null = null;
+  private subtitleTimer: ReturnType<typeof setTimeout> | null = null;
+  private cueCtx: AudioContext | null = null;
 
   isSupported(): boolean {
-    return (
-      typeof window !== 'undefined' &&
-      typeof window.speechSynthesis !== 'undefined' &&
-      typeof window.SpeechSynthesisUtterance !== 'undefined'
-    );
-  }
-
-  private bindVoicesChanged(): void {
-    if (this.voicesBound || !this.isSupported()) return;
-    this.voicesBound = true;
-    try {
-      const synth = window.speechSynthesis;
-      const refresh = () => {
-        try {
-          const list = synth.getVoices();
-          if (Array.isArray(list) && list.length > 0) {
-            this.cachedVoices = list;
-          }
-        } catch {
-          // Ignore browser voice enumeration errors
-        }
-      };
-      refresh();
-      if (typeof synth.addEventListener === 'function') {
-        synth.addEventListener('voiceschanged', refresh);
-      } else if ('onvoiceschanged' in synth) {
-        synth.onvoiceschanged = refresh;
-      }
-    } catch {
-      // Safe no-op in restricted environments
-    }
+    return tapeAudioPlayer.isSupported();
   }
 
   configure(config: VoiceDubbingConfig): void {
@@ -81,45 +72,100 @@ export class VoiceDubbingEngine {
     if (config.muted !== undefined) {
       this.muted = config.muted;
     }
+    if (config.onSubtitle !== undefined) {
+      this.onSubtitle = config.onSubtitle;
+    }
+
+    tapeAudioPlayer.configure({
+      language: mapLanguageToTapeLang(this.language),
+      volume: this.volume,
+      muted: this.muted || !this.enabled,
+    });
+
     if (!this.enabled || this.muted || this.volume <= 0.001) {
       this.stop();
     }
   }
 
-  private pickVoice(lang: Language): SpeechSynthesisVoice | null {
-    if (!this.isSupported()) return null;
+  private playCueTone(speaker: DubSpeaker): void {
+    const Ctor = getAudioContextCtor();
+    if (!Ctor) return;
     try {
-      const synth = window.speechSynthesis;
-      const voices = this.cachedVoices.length > 0 ? this.cachedVoices : synth.getVoices();
-      if (!Array.isArray(voices) || voices.length === 0) return null;
-      this.cachedVoices = voices;
-
-      const normalizedTarget = lang.toLowerCase();
-      const shortPrefix = normalizedTarget.split('-')[0];
-
-      // 1. Exact locale match (prefer localService native voices first)
-      const exactMatches = voices.filter(
-        (v) => (v.lang || '').toLowerCase().replace('_', '-') === normalizedTarget
-      );
-      if (exactMatches.length > 0) {
-        const localExact = exactMatches.find((v) => v.localService);
-        return localExact ?? exactMatches[0];
+      if (!this.cueCtx) {
+        this.cueCtx = new Ctor();
       }
-
-      // 2. Language prefix match (e.g. 'pt', 'en', 'es')
-      const prefixMatches = voices.filter((v) =>
-        (v.lang || '').toLowerCase().replace('_', '-').startsWith(shortPrefix)
-      );
-      if (prefixMatches.length > 0) {
-        const localPrefix = prefixMatches.find((v) => v.localService);
-        return localPrefix ?? prefixMatches[0];
+      const ctx = this.cueCtx;
+      if (ctx.state === 'suspended') {
+        void ctx.resume().catch(() => {});
       }
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.setValueAtTime(speaker === 'diddy' ? 280 : 1250, t);
+      bp.Q.setValueAtTime(2.2, t);
 
-      // 3. Default voice fallback
-      return voices.find((v) => v.default) ?? voices[0] ?? null;
+      osc.type = speaker === 'diddy' ? 'sawtooth' : 'triangle';
+      const baseFreq =
+        speaker === 'diddy'
+          ? 110
+          : speaker === 'marcos'
+            ? 640
+            : speaker === 'system'
+              ? 880
+              : 520;
+      osc.frequency.setValueAtTime(baseFreq, t);
+      osc.frequency.exponentialRampToValueAtTime(baseFreq * 0.86, t + 0.065);
+
+      const level = Math.max(0.001, Math.min(0.12, this.volume * 0.09));
+      gain.gain.setValueAtTime(level, t);
+      gain.gain.exponentialRampToValueAtTime(0.0008, t + 0.075);
+
+      osc.connect(bp);
+      bp.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.08);
     } catch {
-      return null;
+      // Safe no-op in headless or restricted audio environments
     }
+  }
+
+  private emitFallbackSubtitle(cleanText: string): void {
+    if (this.subtitleTimer) {
+      clearTimeout(this.subtitleTimer);
+      this.subtitleTimer = null;
+    }
+    if (!this.onSubtitle) return;
+    try {
+      this.onSubtitle(cleanText);
+    } catch {
+      // Ignore callback error
+    }
+    const durationMs = Math.max(2400, Math.min(9000, cleanText.length * 55));
+    this.subtitleTimer = setTimeout(() => {
+      this.subtitleTimer = null;
+      try {
+        this.onSubtitle?.(null);
+      } catch {
+        // Ignore callback error
+      }
+    }, durationMs);
+  }
+
+  playTape(
+    tapeNumber: TapeNumber,
+    onSubtitle?: (line: string | null) => void
+  ): Promise<boolean> {
+    if (!this.enabled || this.muted || this.volume <= 0.001) {
+      return Promise.resolve(false);
+    }
+    return tapeAudioPlayer.playTape(tapeNumber, {
+      lang: mapLanguageToTapeLang(this.language),
+      volume: this.volume,
+      onSubtitle: onSubtitle ?? this.onSubtitle ?? undefined,
+    });
   }
 
   speak(text: string, speaker: DubSpeaker = 'system', onRadioCue?: () => void): boolean {
@@ -127,48 +173,42 @@ export class VoiceDubbingEngine {
     if (!cleanText || !this.enabled || this.muted || this.volume <= 0.001) {
       return false;
     }
-    if (!this.isSupported()) {
-      return false;
+
+    if (onRadioCue) {
+      try {
+        onRadioCue();
+      } catch {
+        // Never allow radio cue callback errors to break dubbing flow
+      }
     }
 
-    try {
-      this.bindVoicesChanged();
-      const synth = window.speechSynthesis;
-      synth.cancel();
-
-      if (onRadioCue) {
-        try {
-          onRadioCue();
-        } catch {
-          // Never allow radio cue callback errors to break speech synthesis
-        }
-      }
-
-      const utterance = new window.SpeechSynthesisUtterance(cleanText);
-      const profile = SPEAKER_PROFILES[speaker] ?? SPEAKER_PROFILES.system;
-      utterance.lang = this.language;
-      utterance.pitch = profile.pitch;
-      utterance.rate = profile.rate;
-      utterance.volume = Math.max(0, Math.min(1, this.volume));
-
-      const voice = this.pickVoice(this.language);
-      if (voice) {
-        utterance.voice = voice;
-      }
-
-      synth.speak(utterance);
+    const tapeNumber = detectTapeNumber(cleanText, speaker);
+    if (tapeNumber !== null) {
+      void this.playTape(tapeNumber);
       return true;
-    } catch {
-      return false;
     }
+
+    // Clean subtitle + subtle analog comms audio cue (no robotic browser TTS)
+    this.emitFallbackSubtitle(cleanText);
+    if (this.isSupported()) {
+      this.playCueTone(speaker);
+      return true;
+    }
+    return false;
   }
 
   stop(): void {
-    if (!this.isSupported()) return;
-    try {
-      window.speechSynthesis.cancel();
-    } catch {
-      // Safe no-op
+    if (this.subtitleTimer) {
+      clearTimeout(this.subtitleTimer);
+      this.subtitleTimer = null;
+    }
+    tapeAudioPlayer.stop(false);
+    if (this.onSubtitle) {
+      try {
+        this.onSubtitle(null);
+      } catch {
+        // Safe no-op
+      }
     }
   }
 }

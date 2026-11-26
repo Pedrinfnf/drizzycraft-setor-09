@@ -316,6 +316,98 @@ export class PeerInterpolationBuffer {
   }
 }
 
+export interface DrizzySnapshotEntry {
+  timestamp: number;
+  tick?: number;
+  x: number;
+  y: number;
+  z: number;
+  yaw: number;
+  floor: 0 | -1;
+  state: import('../game/types').DiddyAiState;
+}
+
+/**
+ * Dedicated 100ms Snapshot Interpolation Buffer for remote authoritative P. Drizzy.
+ * Interpolates (x, y, z) linearly and yaw via lerpAngle at `nowMs - 100ms`,
+ * computes real displaced `actualSpeed` to drive smooth limb animations, and NEVER teleports or extrapolates.
+ */
+export class DrizzyInterpolationBuffer {
+  public readonly delayMs: number;
+  private readonly maxEntries: number;
+  private entries: DrizzySnapshotEntry[] = [];
+  private lastTick = -1;
+
+  constructor(delayMs = 100, maxEntries = 32) {
+    this.delayMs = Math.max(0, delayMs);
+    this.maxEntries = Math.max(4, maxEntries);
+  }
+
+  push(entry: DrizzySnapshotEntry): boolean {
+    if (typeof entry.tick === 'number') {
+      if (entry.tick <= this.lastTick) return false;
+      this.lastTick = entry.tick;
+    }
+    const len = this.entries.length;
+    if (len > 0 && entry.timestamp < this.entries[len - 1].timestamp) {
+      return false;
+    }
+    if (len > 0 && entry.timestamp === this.entries[len - 1].timestamp) {
+      this.entries[len - 1] = { ...entry };
+    } else {
+      this.entries.push({ ...entry });
+      if (this.entries.length > this.maxEntries) this.entries.shift();
+    }
+    return true;
+  }
+
+  sample(nowMs: number): (DrizzySnapshotEntry & { actualSpeed: number }) | null {
+    const len = this.entries.length;
+    if (len === 0) return null;
+    if (len === 1) return { ...this.entries[0], actualSpeed: 0 };
+
+    const renderTime = nowMs - this.delayMs;
+    if (renderTime <= this.entries[0].timestamp) {
+      return { ...this.entries[0], actualSpeed: 0 };
+    }
+    const latest = this.entries[len - 1];
+    if (renderTime >= latest.timestamp) {
+      const prev = this.entries[len - 2];
+      const dtSec = Math.max(0.01, (latest.timestamp - prev.timestamp) / 1000);
+      const speed = Math.hypot(latest.x - prev.x, latest.z - prev.z) / dtSec;
+      return { ...latest, actualSpeed: renderTime - latest.timestamp > 250 ? 0 : speed };
+    }
+
+    for (let i = 0; i < len - 1; i++) {
+      const a = this.entries[i];
+      const b = this.entries[i + 1];
+      if (renderTime >= a.timestamp && renderTime <= b.timestamp) {
+        const span = b.timestamp - a.timestamp;
+        const alpha = span > 0 ? Math.max(0, Math.min(1, (renderTime - a.timestamp) / span)) : 1;
+        const dtSec = Math.max(0.01, span / 1000);
+        const speed = Math.hypot(b.x - a.x, b.z - a.z) / dtSec;
+        return {
+          timestamp: renderTime,
+          tick: b.tick,
+          x: lerp(a.x, b.x, alpha),
+          y: lerp(a.y, b.y, alpha),
+          z: lerp(a.z, b.z, alpha),
+          yaw: lerpAngle(a.yaw, b.yaw, alpha),
+          floor: alpha < 0.5 ? a.floor : b.floor,
+          state: alpha < 0.5 ? a.state : b.state,
+          actualSpeed: speed,
+        };
+      }
+    }
+    return { ...latest, actualSpeed: 0 };
+  }
+
+  clear(): void {
+    this.entries = [];
+    this.lastTick = -1;
+  }
+}
+
 // ============================================================================
 // MultiplayerClient (WebSocket 20Hz + Graceful Local-Lobby Fallback)
 // ============================================================================
@@ -827,7 +919,7 @@ export class MultiplayerClient {
       return;
     }
 
-    if (type === 'sync_door') this.emit('door_synced', msg);
+    if (type === 'sync_door' || type === 'DOOR_STATE_UPDATE') this.emit('door_synced', msg);
     else if (type === 'sync_item') this.emit('item_synced', msg);
     else if (type === 'sync_generator') this.emit('generator_synced', msg);
     else if (type === 'sync_ping') this.emit('ping_synced', msg);
@@ -1381,10 +1473,21 @@ export class MultiplayerClient {
     return result;
   }
 
+  private doorSyncSeq = 0;
+
   syncDoor(doorId: string, open: boolean, locked?: boolean): void {
     if (this.mode !== 'online') return;
-    if (this.transport === 'relay') this.broadcastRelayRoom({ type: 'sync_door', doorId, open, locked });
-    else this.sendRaw({ type: 'sync_door', doorId, open, locked });
+    const seqId = ++this.doorSyncSeq;
+    const payload = {
+      type: 'DOOR_STATE_UPDATE',
+      doorId,
+      open,
+      locked: Boolean(locked),
+      seqId,
+      ts: Date.now(),
+    };
+    if (this.transport === 'relay') this.broadcastRelayRoom(payload);
+    else this.sendRaw(payload);
   }
 
   syncItem(

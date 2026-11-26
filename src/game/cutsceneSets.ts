@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createSculptedArticulatedSurvivorRig } from './characterModels';
 
 export type PeerAnimState =
   | 'idle'
@@ -6,6 +7,7 @@ export type PeerAnimState =
   | 'run'
   | 'crouch_idle'
   | 'crouch_walk'
+  | 'downed_crawl'
   | 'captured';
 
 export interface ArticulatedPeerRig {
@@ -14,9 +16,13 @@ export interface ArticulatedPeerRig {
   torso: THREE.Group;
   head: THREE.Group;
   leftArm: THREE.Group;
+  leftForeArm: THREE.Group;
   rightArm: THREE.Group;
+  rightForeArm: THREE.Group;
   leftLeg: THREE.Group;
+  leftShin: THREE.Group;
   rightLeg: THREE.Group;
+  rightShin: THREE.Group;
   heldItemGroup: THREE.Group;
   flashlightCone: THREE.Mesh;
   nametagSprite: THREE.Sprite | null;
@@ -49,119 +55,41 @@ function makeBox(
 }
 
 /**
- * Builds an articulated micro-voxel Survivor character rig used for BOTH
- * 30Hz Multiplayer Remote Peers AND Choreographed Cutscene Actors!
+ * Builds the flagship High-Density Sculpted Articulated Micro-Voxel Survivor character rig
+ * (11 VoxelSculptor parts with Baked Vertex AO — elbows, knees, layered hair, hood, backpack,
+ * tactical belt, watch & laced boots) for Multiplayer Allies AND Choreographed Cutscenes!
  */
-export function createArticulatedPeerRig(withNametag = true): ArticulatedPeerRig {
-  const root = new THREE.Group();
+export function createArticulatedPeerRig(withNametag = true, jacketHex = 0x254873): ArticulatedPeerRig {
+  const sculpted = createSculptedArticulatedSurvivorRig(jacketHex);
+  const {
+    root,
+    pelvis,
+    torso,
+    head,
+    leftArm,
+    leftForeArm,
+    rightArm,
+    rightForeArm,
+    leftLeg,
+    leftShin,
+    rightLeg,
+    rightShin,
+    heldItemGroup,
+  } = sculpted;
 
-  const pelvis = new THREE.Group();
-  pelvis.position.set(0, 0.78, 0);
-  root.add(pelvis);
-
-  // Utility belt
-  const belt = makeBox(0.42, 0.09, 0.24, 0x181512);
-  pelvis.add(belt);
-  const buckle = makeBox(0.08, 0.06, 0.04, 0xd97706);
-  buckle.position.set(0, 0, 0.12);
-  pelvis.add(buckle);
-
-  // Left & Right Legs (pivoted at hip)
-  const leftLeg = new THREE.Group();
-  leftLeg.position.set(-0.11, -0.02, 0);
-  const legLMesh = makeBox(0.16, 0.62, 0.18, 0x262d3a);
-  legLMesh.position.y = -0.31;
-  leftLeg.add(legLMesh);
-  const bootL = makeBox(0.17, 0.16, 0.24, 0x181b22);
-  bootL.position.set(0, -0.68, 0.03);
-  leftLeg.add(bootL);
-  pelvis.add(leftLeg);
-
-  const rightLeg = new THREE.Group();
-  rightLeg.position.set(0.11, -0.02, 0);
-  const legRMesh = makeBox(0.16, 0.62, 0.18, 0x262d3a);
-  legRMesh.position.y = -0.31;
-  rightLeg.add(legRMesh);
-  const bootR = makeBox(0.17, 0.16, 0.24, 0x181b22);
-  bootR.position.set(0, -0.68, 0.03);
-  rightLeg.add(bootR);
-  pelvis.add(rightLeg);
-
-  // Torso (windbreaker + field backpack + chest straps)
-  const torso = new THREE.Group();
-  torso.position.set(0, 0.05, 0);
-  pelvis.add(torso);
-
-  const jacket = makeBox(0.46, 0.56, 0.25, 0x254873);
-  jacket.position.y = 0.28;
-  torso.add(jacket);
-
-  const zipper = makeBox(0.1, 0.52, 0.03, 0x1c212b);
-  zipper.position.set(0, 0.28, 0.12);
-  torso.add(zipper);
-
-  const pack = makeBox(0.36, 0.44, 0.16, 0x3b4252);
-  pack.position.set(0, 0.28, -0.19);
-  torso.add(pack);
-
-  const beacon = makeBox(0.05, 0.05, 0.04, 0x38bdf8, 0x38bdf8, 1.4);
-  beacon.position.set(-0.12, 0.42, 0.14);
-  torso.add(beacon);
-
-  // Head (pivoted at neck for pitch/look tracking)
-  const head = new THREE.Group();
-  head.position.set(0, 0.58, 0);
-  torso.add(head);
-
-  const skull = makeBox(0.32, 0.32, 0.3, 0xd8a682);
-  skull.position.y = 0.16;
-  head.add(skull);
-
-  const hair = makeBox(0.34, 0.12, 0.32, 0x291c15);
-  hair.position.set(0, 0.3, -0.01);
-  head.add(hair);
-
-  const eyeL = makeBox(0.05, 0.04, 0.02, 0x0f172a);
-  eyeL.position.set(-0.07, 0.18, 0.155);
-  head.add(eyeL);
-  const eyeR = makeBox(0.05, 0.04, 0.02, 0x0f172a);
-  eyeR.position.set(0.07, 0.18, 0.155);
-  head.add(eyeR);
-
-  // Left Arm
-  const leftArm = new THREE.Group();
-  leftArm.position.set(-0.3, 0.5, 0);
-  const armLMesh = makeBox(0.14, 0.52, 0.15, 0x254873);
-  armLMesh.position.y = -0.22;
-  leftArm.add(armLMesh);
-  const handL = makeBox(0.12, 0.12, 0.12, 0xd8a682);
-  handL.position.y = -0.5;
-  leftArm.add(handL);
-  torso.add(leftArm);
-
-  // Right Arm + Held Item Mount + Flashlight Visual Beam
-  const rightArm = new THREE.Group();
-  rightArm.position.set(0.3, 0.5, 0);
-  const armRMesh = makeBox(0.14, 0.52, 0.15, 0x254873);
-  armRMesh.position.y = -0.22;
-  rightArm.add(armRMesh);
-  const handR = makeBox(0.12, 0.12, 0.12, 0xd8a682);
-  handR.position.y = -0.5;
-  rightArm.add(handR);
-
-  const heldItemGroup = new THREE.Group();
-  heldItemGroup.position.set(0, -0.5, 0.12);
-  rightArm.add(heldItemGroup);
-
-  const defaultFlash = makeBox(0.07, 0.07, 0.26, 0x334155);
+  // Sculpted tactical flashlight mounted cleanly in right hand
+  const defaultFlash = makeBox(0.065, 0.065, 0.26, 0x334155);
   defaultFlash.name = 'item_body';
   heldItemGroup.add(defaultFlash);
-  const lens = makeBox(0.06, 0.06, 0.03, 0xfef08a, 0xfef08a, 1.8);
-  lens.position.z = 0.14;
+  const bezel = makeBox(0.085, 0.085, 0.05, 0x1e293b);
+  bezel.position.z = 0.11;
+  heldItemGroup.add(bezel);
+  const lens = makeBox(0.06, 0.06, 0.025, 0xfef08a, 0xfef08a, 2.0);
+  lens.position.z = 0.145;
   lens.name = 'item_lens';
   heldItemGroup.add(lens);
 
-  // Soft translucent flashlight beam cone visible on remote teammates
+  // Soft translucent volumetric flashlight beam cone visible on remote teammates
   const coneGeo = new THREE.ConeGeometry(0.62, 3.6, 12, 1, true);
   coneGeo.translate(0, -1.8, 0);
   coneGeo.rotateX(-Math.PI / 2);
@@ -176,8 +104,6 @@ export function createArticulatedPeerRig(withNametag = true): ArticulatedPeerRig
   const flashlightCone = new THREE.Mesh(coneGeo, coneMat);
   flashlightCone.position.set(0, 0, 0.16);
   heldItemGroup.add(flashlightCone);
-
-  torso.add(rightArm);
 
   // Floating 3D Nametag Sprite (Nickname + Platform + Speaking Wave + Captured Alert)
   let nametagSprite: THREE.Sprite | null = null;
@@ -208,9 +134,13 @@ export function createArticulatedPeerRig(withNametag = true): ArticulatedPeerRig
     torso,
     head,
     leftArm,
+    leftForeArm,
     rightArm,
+    rightForeArm,
     leftLeg,
+    leftShin,
     rightLeg,
+    rightShin,
     heldItemGroup,
     flashlightCone,
     nametagSprite,
@@ -373,62 +303,107 @@ export function updatePeerRigAnimation(
   const s = Math.sin(t);
   const k = Math.min(1, dt * 14);
 
-  let pelvisY = 0.78;
+  let pelvisY = 0.72;
+  let pelvisPitch = 0;
   let torsoPitch = 0;
   let armLPitch = 0;
-  let armRPitch = -0.35; // holding flashlight/item forward
+  let foreLPitch = -0.15;
+  let armRPitch = -0.35;
+  let foreRPitch = -0.45;
   let legLPitch = 0;
+  let shinLPitch = 0;
   let legRPitch = 0;
+  let shinRPitch = 0;
+  const c = Math.cos(t);
 
   if (state === 'idle') {
-    pelvisY = 0.78 + Math.sin(t * 0.9) * 0.015;
+    pelvisY = 0.72 + Math.sin(t * 0.9) * 0.014;
     armLPitch = Math.sin(t * 0.7) * 0.05;
-    armRPitch = -0.55 + Math.sin(t * 0.6) * 0.03;
+    foreLPitch = -0.18;
+    armRPitch = -0.42 + Math.sin(t * 0.6) * 0.03;
+    foreRPitch = -0.52;
   } else if (state === 'walk') {
-    pelvisY = 0.78 + Math.abs(s) * 0.04;
-    torsoPitch = 0.06;
+    pelvisY = 0.72 + Math.abs(s) * 0.038;
+    torsoPitch = 0.07;
     legLPitch = s * 0.52;
+    shinLPitch = Math.max(0, -c) * 0.55;
     legRPitch = -s * 0.52;
-    armLPitch = -s * 0.45;
-    armRPitch = -0.62 + s * 0.16;
+    shinRPitch = Math.max(0, c) * 0.55;
+    armLPitch = -s * 0.42;
+    foreLPitch = -0.25 - Math.max(0, -s) * 0.2;
+    armRPitch = -0.55 + s * 0.14;
+    foreRPitch = -0.48;
   } else if (state === 'run') {
-    pelvisY = 0.75 + Math.abs(s) * 0.075;
-    torsoPitch = 0.24;
+    pelvisY = 0.68 + Math.abs(s) * 0.072;
+    torsoPitch = 0.25;
     legLPitch = s * 0.92;
+    shinLPitch = Math.max(0, -c) * 1.05;
     legRPitch = -s * 0.92;
+    shinRPitch = Math.max(0, c) * 1.05;
     armLPitch = -s * 0.85;
-    armRPitch = -0.78 + s * 0.28;
+    foreLPitch = -0.65 - Math.max(0, -s) * 0.35;
+    armRPitch = -0.68 + s * 0.25;
+    foreRPitch = -0.6;
   } else if (state === 'crouch_idle') {
-    pelvisY = 0.52;
+    pelvisY = 0.48;
     torsoPitch = 0.34;
     legLPitch = -0.55;
+    shinLPitch = 0.95;
     legRPitch = -0.45;
+    shinRPitch = 0.85;
     armLPitch = -0.15;
-    armRPitch = -0.72;
+    foreLPitch = -0.35;
+    armRPitch = -0.62;
+    foreRPitch = -0.45;
   } else if (state === 'crouch_walk') {
-    pelvisY = 0.52 + Math.abs(s) * 0.03;
+    pelvisY = 0.48 + Math.abs(s) * 0.03;
     torsoPitch = 0.38;
     legLPitch = -0.45 + s * 0.42;
+    shinLPitch = 0.85 + Math.max(0, -c) * 0.35;
     legRPitch = -0.45 - s * 0.42;
-    armLPitch = -0.2 - s * 0.25;
-    armRPitch = -0.74 + s * 0.14;
+    shinRPitch = 0.85 + Math.max(0, c) * 0.35;
+    armLPitch = -0.2 - s * 0.24;
+    foreLPitch = -0.38;
+    armRPitch = -0.66 + s * 0.12;
+    foreRPitch = -0.48;
+  } else if (state === 'downed_crawl') {
+    pelvisY = 0.24;
+    pelvisPitch = 1.25;
+    torsoPitch = -0.2;
+    armLPitch = -0.9 + s * 0.35;
+    foreLPitch = -0.4;
+    armRPitch = -0.9 - s * 0.35;
+    foreRPitch = -0.4;
+    legLPitch = 0.15 - s * 0.2;
+    shinLPitch = 0.35;
+    legRPitch = 0.15 + s * 0.2;
+    shinRPitch = 0.35;
   } else if (state === 'captured') {
-    pelvisY = 0.46;
+    pelvisY = 0.42;
     torsoPitch = 0.22;
     legLPitch = -1.1;
+    shinLPitch = 1.15;
     legRPitch = -1.1;
+    shinRPitch = 1.15;
     armLPitch = -0.35 + Math.sin(t * 1.4) * 0.08;
+    foreLPitch = -0.65;
     armRPitch = -0.35 - Math.sin(t * 1.4) * 0.08;
+    foreRPitch = -0.65;
   }
 
   const clampedPitch = Math.max(-0.7, Math.min(0.7, pitch));
   rig.pelvis.position.y += (pelvisY - rig.pelvis.position.y) * k;
+  rig.pelvis.rotation.x += (pelvisPitch - rig.pelvis.rotation.x) * k;
   rig.torso.rotation.x += (torsoPitch - rig.torso.rotation.x) * k;
   rig.head.rotation.x += (-clampedPitch * 0.75 - rig.head.rotation.x) * k;
   rig.leftArm.rotation.x += (armLPitch - rig.leftArm.rotation.x) * k;
+  rig.leftForeArm.rotation.x += (foreLPitch - rig.leftForeArm.rotation.x) * k;
   rig.rightArm.rotation.x += (armRPitch - clampedPitch * 0.55 - rig.rightArm.rotation.x) * k;
+  rig.rightForeArm.rotation.x += (foreRPitch - rig.rightForeArm.rotation.x) * k;
   rig.leftLeg.rotation.x += (legLPitch - rig.leftLeg.rotation.x) * k;
+  rig.leftShin.rotation.x += (shinLPitch - rig.leftShin.rotation.x) * k;
   rig.rightLeg.rotation.x += (legRPitch - rig.rightLeg.rotation.x) * k;
+  rig.rightShin.rotation.x += (shinRPitch - rig.rightShin.rotation.x) * k;
 }
 
 // ============================================================================
